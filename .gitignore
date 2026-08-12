@@ -1,0 +1,9 @@
+hdl/generated/
+board-files/
+vivado-library/
+build/
+out/
+*.jou
+*.log
+*.bit
+*.hwh

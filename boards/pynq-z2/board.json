@@ -1,0 +1,8 @@
+{
+  "part": "xc7z020clg400-1",
+  "board_part": "tul.com.tw:pynq-z2:part0:1.0",
+  "lane_map": [1, 2, 0],
+  "lane_map_solved": "2026-08-12, picam2hdmi source, counting + checker patterns",
+  "tmds_constraint_mhz": 148.5,
+  "notes": "dvi2rgb kClkRange=1 with the 148.5 MHz constraint, as the board's base overlay ships; EDID dgl_720p_cea"
+}
