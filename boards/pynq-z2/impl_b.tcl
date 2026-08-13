@@ -8,7 +8,14 @@ set here [file dirname [file normalize [info script]]]
 set_param general.maxThreads 1
 open_checkpoint [file join $here build placed.dcp]
 route_design
+# Post-route physical optimization: the last tens of picoseconds are
+# placement's to give back, not the RTL's to chase.
+if {[get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]] < 0} {
+    phys_opt_design
+}
 puts "WNS: [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]"
+# When timing fails, the path IS the diagnosis: print the worst three.
+report_timing -max_paths 3 -nworst 1 -setup
 file mkdir /tmp/rxout
 write_bitstream -force /tmp/rxout/rx.bit
 file mkdir [file join $here out]

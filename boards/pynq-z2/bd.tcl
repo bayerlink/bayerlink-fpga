@@ -3,14 +3,15 @@
 # The receive-proof bitstream: dvi2rgb front end, two capture paths.
 # Batch: vivado -mode batch -source build.tcl (from /work in the container)
 set here [file dirname [file normalize [info script]]]
+set root [file normalize [file join $here .. ..]]
 set_param board.repoPaths [file join $root board-files]
 create_project rx [file join $here build rx] -part xc7z020clg400-1 -force
 set_property board_part tul.com.tw:pynq-z2:part0:1.0 [current_project]
 set_property ip_repo_paths [file join $root vivado-library] [current_project]
 update_ip_catalog
 
-set root [file normalize [file join $here .. ..]]
-add_files [file join $root hdl generated bayerlink_rx.v] \
+add_files [file join $root hdl vid_push.v] \
+    [file join $root hdl generated bayerlink_rx.v] \
     [file join $root hdl rx_axis.v] [file join $root hdl vid_probe.v] \
     [file join $root hdl axis_spy.v]
 add_files -fileset constrs_1 [file join $here pynq-z2.xdc]
@@ -84,12 +85,63 @@ connect_bd_intf_net [get_bd_intf_pins shim/m_axis] [get_bd_intf_pins cdc/S_AXIS]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins cdc/s_axis_aclk]
 
 set dma [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_dma dma]
+# 32-bit words: the v2 receiver's samples are 16-bit unshifted, plus
+# sof/eol above them (rx_axis owns the layout).
 set_property -dict [list CONFIG.c_include_mm2s {0} CONFIG.c_include_sg {0} \
-    CONFIG.c_s_axis_s2mm_tdata_width {16} CONFIG.c_sg_length_width {26}] $dma
+    CONFIG.c_s_axis_s2mm_tdata_width {32} CONFIG.c_sg_length_width {26}] $dma
 set spy [create_bd_cell -type module -reference axis_spy spy_cdc]
+set_property -dict [list CONFIG.DW {32}] $spy
 connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins spy_cdc/clk]
 connect_bd_intf_net [get_bd_intf_pins cdc/M_AXIS] [get_bd_intf_pins spy_cdc/s_axis]
 connect_bd_intf_net [get_bd_intf_pins spy_cdc/m_axis] [get_bd_intf_pins dma/S_AXIS_S2MM]
+
+# --- display side: the same 720p the receiver listens to, sourced from
+# a framebuffer in DDR. Pixel clock is OURS (static 74.25 from FCLK0);
+# rgb2dvi makes its own 5x serial clock (MMCM: 742.5 sits inside the
+# MMCM VCO window; a PLL's floor is above it).
+set cw [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz clk_out]
+# No_buffer: FCLK arrives from the PS already buffered; the default
+# expects a package PIN and builds an input path to nowhere -- an MMCM
+# that never sees an edge, and a perfectly silent dead clock.
+set_property -dict [list CONFIG.PRIM_IN_FREQ {100.000} \
+    CONFIG.PRIM_SOURCE {No_buffer} \
+    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {74.250} \
+    CONFIG.USE_LOCKED {true} CONFIG.USE_RESET {false}] $cw
+connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins clk_out/clk_in1]
+
+# No v_tc, no v_axi4s_vid_out: that pair's lock was never witnessed
+# here across every mode it offers. The raster is OURS -- vid_push
+# carries the exact counters the port prover lit a display with, and
+# pops the VDMA stream one beat per active pixel. Its alignment and
+# underflow decisions are status bits, not a lock to pray over.
+set tx [create_bd_cell -type ip -vlnv digilentinc.com:ip:rgb2dvi hdmi_tx]
+set_property -dict [list CONFIG.kGenerateSerialClk {true} \
+    CONFIG.kClkPrimitive {MMCM} CONFIG.kClkRange {2} \
+    CONFIG.kRstActiveHigh {true}] $tx
+set vp [create_bd_cell -type module -reference vid_push vid_push]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vid_push/clk]
+connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins vid_push/locked]
+connect_bd_intf_net [get_bd_intf_pins vid_push/vid_io] [get_bd_intf_pins hdmi_tx/RGB]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins hdmi_tx/PixelClk]
+make_bd_intf_pins_external [get_bd_intf_pins hdmi_tx/TMDS]
+set_property name hdmi_tx [get_bd_intf_ports TMDS_0]
+
+# VDMA grows its read side: the framebuffer out.
+# The read stream lives on the PIXEL clock: vid_push pops at raster
+# pace with no elastic in between beyond the vdma's own line buffer.
+# The stream stays 32-bit (the core refuses 24): xRGB pixels, and
+# vid_push takes the low three bytes of each beat.
+# FREE-RUN, explicitly: propagation once slipped in use_fsync=1 and
+# genlock-slave -- a scheduler waiting forever on a sync and a frame
+# pointer that nothing drives. Running-while-starving, no error bit.
+set_property -dict [list CONFIG.c_include_mm2s {1} \
+    CONFIG.c_mm2s_linebuffer_depth {2048} \
+    CONFIG.c_use_fsync {0} \
+    CONFIG.c_mm2s_genlock_mode {0} \
+    CONFIG.c_s2mm_genlock_mode {0}] $vdma
+connect_bd_intf_net [get_bd_intf_pins vdma/M_AXIS_MM2S] [get_bd_intf_pins vid_push/s_axis]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vdma/m_axis_mm2s_aclk]
+connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins vdma/m_axi_mm2s_aclk]
 
 # --- interrupts: the pynq drivers refuse to exist without them
 set irqcat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat irq_cat]
@@ -111,17 +163,40 @@ connect_bd_net [get_bd_pins dvi_rx/vid_pVDE] [get_bd_pins probe/de]
 connect_bd_net [get_bd_pins dvi_rx/vid_pVSync] [get_bd_pins probe/vsync]
 connect_bd_net [get_bd_pins dvi_rx/vid_pData] [get_bd_pins probe/data]
 connect_bd_net [get_bd_pins blrx/out_valid] [get_bd_pins probe/rx_valid]
+# The pin-level taps above EVICT vid_pData/vid_pVDE from the RGB
+# interface expansion -- Vivado silently drops any interface pin that
+# also carries an explicit net, and vid_in's data and active_video
+# tied to zero: the whole R1 darkness, explained. Rejoin them.
+connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins dvi_rx/vid_pData]] \
+    [get_bd_pins vid_in/vid_data]
+connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins dvi_rx/vid_pVDE]] \
+    [get_bd_pins vid_in/vid_active_video]
 
 set gpio [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio status_gpio]
-set_property -dict [list CONFIG.C_GPIO_WIDTH {18} CONFIG.C_ALL_INPUTS {1} \
-    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {16} CONFIG.C_ALL_INPUTS_2 {1}] $gpio
+set_property -dict [list CONFIG.C_GPIO_WIDTH {30} CONFIG.C_ALL_INPUTS {1} \
+    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {32} CONFIG.C_ALL_INPUTS_2 {1}] $gpio
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins spy_cdc/rst]
-connect_bd_net [get_bd_pins spy_cdc/status] [get_bd_pins status_gpio/gpio2_io_i]
+set cat2 [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat status2_cat]
+set_property CONFIG.NUM_PORTS {3} $cat2
+connect_bd_net [get_bd_pins spy_cdc/status] [get_bd_pins status2_cat/In0]
+connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins status2_cat/In1]
+connect_bd_net [get_bd_pins vid_push/status] [get_bd_pins status2_cat/In2]
+connect_bd_net [get_bd_pins status2_cat/dout] [get_bd_pins status_gpio/gpio2_io_i]
+# The v2 receiver's verdicts and header facts, packed for one read:
+# {hdr_phase[1:0], hdr_valid, hdr_bits[4:0], refuse_code[2:0], refused}
+set hcat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat hdr_cat]
+set_property CONFIG.NUM_PORTS {5} $hcat
+connect_bd_net [get_bd_pins blrx/refused] [get_bd_pins hdr_cat/In0]
+connect_bd_net [get_bd_pins blrx/refuse_code] [get_bd_pins hdr_cat/In1]
+connect_bd_net [get_bd_pins blrx/hdr_bits] [get_bd_pins hdr_cat/In2]
+connect_bd_net [get_bd_pins blrx/hdr_valid] [get_bd_pins hdr_cat/In3]
+connect_bd_net [get_bd_pins blrx/hdr_phase] [get_bd_pins hdr_cat/In4]
 set cat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat status_cat]
-set_property CONFIG.NUM_PORTS {3} $cat
+set_property CONFIG.NUM_PORTS {4} $cat
 connect_bd_net [get_bd_pins dvi_rx/aPixelClkLckd] [get_bd_pins status_cat/In0]
 connect_bd_net [get_bd_pins blrx/overflow] [get_bd_pins status_cat/In1]
 connect_bd_net [get_bd_pins probe/status] [get_bd_pins status_cat/In2]
+connect_bd_net [get_bd_pins hdr_cat/dout] [get_bd_pins status_cat/In3]
 connect_bd_net [get_bd_pins status_cat/dout] [get_bd_pins status_gpio/gpio_io_i]
 
 # --- automation for AXI plumbing, resets, address map
@@ -144,7 +219,12 @@ apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
 # NOT automation: its second pass built the dma a private interconnect
 # whose master port went to __NOC__ -- nowhere -- and called it a
 # warning. Both stream engines share the one interconnect, explicitly.
-set_property CONFIG.NUM_SI {2} [get_bd_cells axi_mem_intercon]
+set_property CONFIG.NUM_SI {3} [get_bd_cells axi_mem_intercon]
+connect_bd_intf_net [get_bd_intf_pins vdma/M_AXI_MM2S] \
+    [get_bd_intf_pins axi_mem_intercon/S02_AXI]
+connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins axi_mem_intercon/S02_ACLK]
+connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins axi_mem_intercon/S00_ARESETN]] \
+    [get_bd_pins axi_mem_intercon/S02_ARESETN]
 connect_bd_intf_net [get_bd_intf_pins dma/M_AXI_S2MM] \
     [get_bd_intf_pins axi_mem_intercon/S01_AXI]
 connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins axi_mem_intercon/S01_ACLK]
@@ -175,6 +255,13 @@ connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/s_axis_aresetn]
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins vid_in/aresetn]
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins vid_in/vid_io_in_reset]
+connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins vid_push/rst]
+# The prover's reset recipe, kept verbatim: rgb2dvi held in reset by
+# nothing but the pixel MMCM's own lock.
+set lockinv [create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic lock_inv]
+set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] $lockinv
+connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins lock_inv/Op1]
+connect_bd_net [get_bd_pins lock_inv/Res] [get_bd_pins hdmi_tx/aRst]
 assign_bd_address
 # Explicitly: both stream engines write the DDR through HP0. The
 # automation left dma/Data_S2MM UNMAPPED and validate called that a
@@ -182,6 +269,8 @@ assign_bd_address
 assign_bd_address -target_address_space /dma/Data_S2MM \
     [get_bd_addr_segs ps7/S_AXI_HP0/HP0_DDR_LOWOCM] -force
 assign_bd_address -target_address_space /vdma/Data_S2MM \
+    [get_bd_addr_segs ps7/S_AXI_HP0/HP0_DDR_LOWOCM] -force
+assign_bd_address -target_address_space /vdma/Data_MM2S \
     [get_bd_addr_segs ps7/S_AXI_HP0/HP0_DDR_LOWOCM] -force
 
 validate_bd_design

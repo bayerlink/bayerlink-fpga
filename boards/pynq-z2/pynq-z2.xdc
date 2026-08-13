@@ -21,4 +21,17 @@ create_clock -period 6.734 -name tmds_clk [get_ports TMDS_clk_p]
 ## The software reset is quasi-static: held for milliseconds by a GPIO
 ## write, absorbed by the receiver re-anchoring on the next vsync. Scoped
 ## to the one register so the clock converter's own CDC stays timed.
-set_false_path -from [get_cells -hier -filter {NAME =~ */ctrl_gpio/*gpio_Data_Out_reg*}] -to [get_clocks PixelClk_int]
+## The software reset is quasi-static everywhere by design: held for
+## milliseconds by a GPIO write, absorbed by re-anchoring on the next
+## frame. False-path it wholesale rather than per destination clock.
+set_false_path -from [get_cells -hier -filter {NAME =~ */ctrl_gpio/*gpio_Data_Out_reg*}]
+
+## HDMI TX -- the display side (TUL master XDC v1.0 pin facts)
+set_property -dict { PACKAGE_PIN L16 IOSTANDARD TMDS_33 } [get_ports hdmi_tx_clk_p]
+set_property -dict { PACKAGE_PIN L17 IOSTANDARD TMDS_33 } [get_ports hdmi_tx_clk_n]
+set_property -dict { PACKAGE_PIN K17 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_p[0]}]
+set_property -dict { PACKAGE_PIN K18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_n[0]}]
+set_property -dict { PACKAGE_PIN K19 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_p[1]}]
+set_property -dict { PACKAGE_PIN J19 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_n[1]}]
+set_property -dict { PACKAGE_PIN J18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_p[2]}]
+set_property -dict { PACKAGE_PIN H18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_n[2]}]

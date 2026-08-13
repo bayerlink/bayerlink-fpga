@@ -36,7 +36,7 @@ def main() -> int:
     dma = MMIO(overlay.ip_dict["dma"]["phys_addr"], 0x1000)
     n = args.width * args.height
     expect = np.asarray(pattern.counting(args.width, args.height)).ravel()
-    buffer = allocate(shape=(max(200000, n + 4096),), dtype="u2")
+    buffer = allocate(shape=(max(200000, n + 4096),), dtype="u4")
 
     # Wait for the link, then ONE reset pulse with both clocks running:
     # the async crossings initialize only when both sides reset together.
@@ -55,12 +55,12 @@ def main() -> int:
     def packet():
         dma.write(0x30, 1)
         dma.write(0x48, buffer.physical_address)
-        dma.write(0x58, len(buffer) * 2)
+        dma.write(0x58, len(buffer) * 4)
         for _ in range(500):
             if dma.read(0x34) & 0x2:
                 break
             time.sleep(0.005)
-        got = dma.read(0x58) // 2
+        got = dma.read(0x58) // 4
         buffer.invalidate()
         return np.array(buffer[:got])
 
@@ -68,9 +68,9 @@ def main() -> int:
     for trial in range(args.frames):
         packet()                          # partial: aligns the next one
         words = packet()
-        data = (words & 0xFFF).astype(np.int64)
-        sof = (words >> 13) & 1
-        eol = (words >> 12) & 1
+        data = (words & 0xFFFF).astype(np.int64)
+        sof = (words >> 17) & 1
+        eol = (words >> 16) & 1
         ok = (len(words) == n and np.array_equal(data, expect)
               and len(sof) and sof[0] == 1 and int(sof.sum()) == 1
               and np.array_equal(np.flatnonzero(eol),

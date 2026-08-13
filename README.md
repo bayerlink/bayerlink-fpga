@@ -46,8 +46,8 @@ board is constraints + a lane map + a judged capture — see the
 ## Build (PYNQ-Z2)
 
 ```sh
-pip install np2hw
-python3 gen/receiver.py --board pynq-z2 --width 512 --height 240
+pip install np2hw bayerlink
+python3 gen/receiver.py --board pynq-z2
 git clone --depth 1 https://github.com/Digilent/vivado-library.git
 git clone --depth 1 https://github.com/xupsh/pynq-supported-board-file.git board-files
 cd boards/pynq-z2
@@ -72,6 +72,30 @@ python3 judge.py --bit rx.bit --width 512 --height 240
 Done means what it means everywhere in this ecosystem: every sample and
 every framing flag equal to what the reference codec says, consecutively.
 
+The receiver is the protocol's version 2: the header is parsed in
+fabric and OWNS depth and geometry per frame — all five packed
+families (8/10/12/14/16-bit), any geometry the capacity allows, no
+rebuild, no registers to disagree with the stream. A header the build
+cannot honour refuses that frame with a sticky code. The build fixes
+capacity only; `gen/receiver.py` takes no width and no depth.
+
+## The loopback
+
+The display side closes the loop on one board: a raster generator of
+our own (`hdl/vid_push.v` — the header-parsing receiver's counterpart:
+it OWNS the 720p timing and pops one framebuffer pixel per active
+clock) drives Digilent's rgb2dvi on HDMI OUT, fed by a VDMA
+framebuffer. `scripts/display.py` runs the whole demo: camera in on
+one HDMI, a one-block ISP on the ARM (shift to 8 bits, gray), live
+picture out the other HDMI. The ARM block is a placeholder for a
+generated pipeline; the display plumbing is the permanent part.
+
+`boards/pynq-z2/tpg_top.v` (+ `tpg_rtl.tcl`) is the port prover kept
+as a diagnostic: pure-RTL colour bars out of BOTH HDMI jacks, no PS
+software, no DMA — if a display shows bars, everything below the
+stream layer is exonerated. It is also how this repo learned that the
+IN jack cannot transmit: a sink connector offers the display no +5V.
+
 ## The bring-up ledger
 
 Lessons this repo already paid for, so you do not have to:
@@ -95,6 +119,33 @@ Lessons this repo already paid for, so you do not have to:
 - Vivado in containers: the post-route abort is webtalk's libudev
   enumeration corrupting the heap. Stub `libudev.so.1` (empty answers)
   and it never happens again.
+- Framing is decided at INGEST, where position is known, and travels
+  as tags with the bytes. Framing derived by counting delivered
+  samples turns one lossy stretch into every later frame misframed.
+- Video does not pause while an observer naps: any host reader is
+  bursty, overflow is a way of life, and ONE lost byte must never
+  wedge the stream. The specific wedge: an orphan byte stub too small
+  to emit, under a frame barrier waiting for an empty window. Flush
+  the stub; it belongs to a dead frame by definition.
+- Sentinel-fill every capture buffer (0xBEEF, not zeros). A DMA's
+  length readback mid-stall reports the programmed value, and a page
+  of untouched zeros reads exactly like a decoded black frame.
+- At 148.5 MHz, memories decide timing: a combinational read of a
+  deep FIFO is a thousand-LUT mux (register the read, let it be block
+  RAM), and a wide distributed bank's write fan-out is a net you can
+  see from orbit (keep banks shallow, stage the write).
+- A clocking wizard fed from FCLK needs `PRIM_SOURCE No_buffer`; the
+  default builds an input path to a package pin that is not there,
+  and the MMCM never sees an edge. Perfectly silent.
+- The transmit recipe that lights displays: your own MMCM making the
+  exact pixel clock, rgb2dvi generating its serial clock from it
+  (MMCM, range 2), held in reset by nothing but the pixel MMCM's own
+  lock. Clock quality IS the product: "TPG started!" with a black
+  screen is an undecodable TMDS spectrum, not a missing enable.
+- An IP block whose lock you cannot explain is replaceable. The
+  timing controller pair here never locked under any documented
+  configuration; a raster of our own is 90 lines, and every decision
+  it makes is a status bit.
 
 ## Funding
 
