@@ -85,10 +85,21 @@ The display side closes the loop on one board: a raster generator of
 our own (`hdl/vid_push.v` — the header-parsing receiver's counterpart:
 it OWNS the 720p timing and pops one framebuffer pixel per active
 clock) drives Digilent's rgb2dvi on HDMI OUT, fed by a VDMA
-framebuffer. `scripts/display.py` runs the whole demo: camera in on
+framebuffer. `scripts/display.py` runs the gray demo: camera in on
 one HDMI, a one-block ISP on the ARM (shift to 8 bits, gray), live
-picture out the other HDMI. The ARM block is a placeholder for a
-generated pipeline; the display plumbing is the permanent part.
+picture out the other HDMI.
+
+The ARM block was a placeholder, and it has been replaced: `gen/isp.py`
+composes a revela pipeline -- black level, white balance, bilinear
+demosaic, tone curve -- generates it through np2hw, DEPTH-CHECKS every
+pointwise stage against the clock island (`--clock-mhz`, refusals name
+the block), proves the composition bit-exact against its own NumPy
+model under Verilator, and only then emits Verilog. In the fabric it
+sits between the receiver and the framebuffer's write channel; a
+control bit selects the stream's consumer (the judge's capture path,
+or the ISP), and `scripts/isp.py` is the ARM's entire remaining job:
+point two VDMA channels at one buffer, flip the bit, report status.
+Pixels do not touch software. The camera is on the TV, in colour.
 
 `boards/pynq-z2/tpg_top.v` (+ `tpg_rtl.tcl`) is the port prover kept
 as a diagnostic: pure-RTL colour bars out of BOTH HDMI jacks, no PS
