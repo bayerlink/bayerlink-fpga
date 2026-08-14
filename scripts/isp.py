@@ -11,20 +11,26 @@ point two VDMA channels at one buffer, flip the mode bit, report.
     python3 isp.py --bit rx.bit
 """
 import argparse
+import signal
 import sys
 import time
 
 from pynq import Overlay, allocate, MMIO
 
 MODE_W, MODE_H = 1280, 720
-ISP_W, ISP_H = 512, 240
+ISP_W, ISP_H = 1280, 720    # the whole screen: the container grew instead
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bit", default="rx.bit")
-    parser.add_argument("--seconds", type=float, default=600.0)
+    parser.add_argument("--seconds", type=float, default=0.0,
+                        help="status loop duration; 0 = forever")
     args = parser.parse_args()
+
+    # A plain kill (SIGTERM) must end the loop cleanly: the fabric keeps
+    # the picture, and nothing is left needing kill -9.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     overlay = Overlay(args.bit, download=True)
     ctrl = MMIO(overlay.ip_dict["ctrl_gpio"]["phys_addr"], 0x1000)
@@ -38,12 +44,6 @@ def main() -> int:
     else:
         print("no receiver activity: is the source streaming?")
         return 2
-
-    # ISP mode held while the broom sweeps: bit1 = consumer, bit0 = broom.
-    ctrl.write(0, 0x3)
-    time.sleep(0.05)
-    ctrl.write(0, 0x2)
-    time.sleep(0.1)
 
     fb = allocate(shape=(MODE_H, MODE_W, 4), dtype="u1")
     fb[:] = 16
@@ -68,6 +68,14 @@ def main() -> int:
     vdma.write(0xA4, ISP_W * 4)                 # hsize
     vdma.write(0xA0, ISP_H)                     # vsize -> go
 
+    # Only now flip the stream into the armed S2MM, so the first frame
+    # it ever sees starts at a tuser boundary.  Bit1 = consumer, bit0 =
+    # broom; the broom sweeps while ISP mode is held.
+    ctrl.write(0, 0x3)
+    time.sleep(0.05)
+    ctrl.write(0, 0x2)
+    time.sleep(0.1)
+
     def report(tag):
         s1 = gpio.read(0)
         s2 = gpio.read(0x8)
@@ -79,9 +87,20 @@ def main() -> int:
 
     report("up")
     t0 = time.time()
-    while time.time() - t0 < args.seconds:
-        time.sleep(10)
-        report(f"t+{time.time() - t0:4.0f}s")
+    try:
+        while args.seconds <= 0 or time.time() - t0 < args.seconds:
+            time.sleep(10)
+            report(f"t+{time.time() - t0:4.0f}s")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # The process's exit frees the CMA framebuffer, so the WRITER
+        # must not outlive it: an S2MM left running scribbles 60 frames
+        # a second over whatever the kernel hands those pages to next --
+        # page cache included, which is how an SD card's rootfs rots.
+        # The read side may keep scanning out; reads hurt nobody.
+        vdma.write(0x30, 0x0)
+        time.sleep(0.05)
     return 0
 
 
