@@ -28,8 +28,6 @@ set_property -dict [list \
     CONFIG.PCW_USE_S_AXI_HP0 {1} \
     CONFIG.PCW_EN_CLK1_PORT {1} \
     CONFIG.PCW_FPGA1_PERIPHERAL_FREQMHZ {200} \
-    CONFIG.PCW_EN_CLK2_PORT {1} \
-    CONFIG.PCW_FPGA2_PERIPHERAL_FREQMHZ {66.666666} \
     CONFIG.PCW_USE_FABRIC_INTERRUPT {1} \
     CONFIG.PCW_IRQ_F2P_INTR {1}] $ps
 
@@ -80,26 +78,32 @@ connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins shim/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins sw/a_$s] [get_bd_pins shim/in_$s]
 }
-# --- the ISP branch: pixel clock -> FCLK, then the revela pipeline
+# --- the ISP branch: ONE domain with the receiver. The pixel clock is
+# constrained at 148.5 MHz (the fastest legal link) and the revela
+# pipeline is generated against that same budget -- the traced depth
+# model cuts any too-deep stage into pipeline stages at generation
+# time, so the island and its clock converter are gone.
 set shimb [create_bd_cell -type module -reference rx_axis shim_isp]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins shim_isp/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins sw/b_$s] [get_bd_pins shim_isp/in_$s]
 }
-set cdc2 [create_bd_cell -type ip -vlnv xilinx.com:ip:axis_clock_converter cdc_isp]
-connect_bd_intf_net [get_bd_intf_pins shim_isp/m_axis] [get_bd_intf_pins cdc_isp/S_AXIS]
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins cdc_isp/s_axis_aclk]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins cdc_isp/m_axis_aclk]
 set unp [create_bd_cell -type module -reference axis_unpack unpack_isp]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins unpack_isp/clk]
-connect_bd_intf_net [get_bd_intf_pins cdc_isp/M_AXIS] [get_bd_intf_pins unpack_isp/s_axis]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins unpack_isp/clk]
+connect_bd_intf_net [get_bd_intf_pins shim_isp/m_axis] [get_bd_intf_pins unpack_isp/s_axis]
 set isp [create_bd_cell -type module -reference revela_isp isp]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins isp/clk]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp/clk]
+# The stream's own facts drive the pipeline context: header to ctx,
+# one owner end to end, and now one CLOCK end to end -- an ordinary
+# timed path, no CDC exception needed.
+foreach f {width height phase bits} {
+    connect_bd_net [get_bd_pins blrx/hdr_$f] [get_bd_pins isp/hdr_$f]
+}
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins unpack_isp/out_$s] [get_bd_pins isp/in_$s]
 }
 set iax [create_bd_cell -type module -reference isp_axis isp_out]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins isp_out/clk]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp_out/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp/out_$s] [get_bd_pins isp_out/in_$s]
 }
@@ -264,7 +268,7 @@ connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins axi_mem_intercon/S00_A
 # Stream-side clocks the automation does not own: everything AXI in
 # this design lives on FCLK0, so the crossings are exactly the two
 # declared ones (TMDS pixel clock in, FCLK0 out).
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins vdma/s_axis_s2mm_aclk]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins vdma/s_axis_s2mm_aclk]
 foreach pin {cdc/m_axis_aclk} {
     connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins $pin]
 }
@@ -284,8 +288,6 @@ connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins rstn_pix/Op1]
 # known state: converter (both sides), video-in (both sides), receiver.
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/s_axis_aresetn]
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
-connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc_isp/s_axis_aresetn]
-connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc_isp/m_axis_aresetn]
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins vid_push/rst]
 # The prover's reset recipe, kept verbatim: rgb2dvi held in reset by
 # nothing but the pixel MMCM's own lock.

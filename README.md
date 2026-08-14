@@ -91,10 +91,14 @@ picture out the other HDMI.
 
 The ARM block was a placeholder, and it has been replaced: `gen/isp.py`
 composes a revela pipeline -- black level, white balance, bilinear
-demosaic, tone curve -- generates it through np2hw, DEPTH-CHECKS every
-pointwise stage against the clock island (`--clock-mhz`, refusals name
-the block), proves the composition bit-exact against its own NumPy
-model under Verilator, and only then emits Verilog. In the fabric it
+demosaic, tone curve -- generates it through np2hw, depth-checks every
+stage against the clock (`--clock-mhz`; a too-deep stage is CUT into
+pipeline stages by the traced depth model, and the one refusal left --
+a single operation deeper than the clock -- names itself), proves the
+composition bit-exact against its own NumPy model under Verilator, and
+only then emits Verilog. The whole ISP closes timing at the link's
+148.5 MHz in the receiver's own clock domain: no clock island, no
+clock converter, one clock from TMDS decode to framebuffer write. In the fabric it
 sits between the receiver and the framebuffer's write channel; a
 control bit selects the stream's consumer (the judge's capture path,
 or the ISP), and `scripts/isp.py` is the ARM's entire remaining job:
@@ -157,6 +161,21 @@ Lessons this repo already paid for, so you do not have to:
   timing controller pair here never locked under any documented
   configuration; a raster of our own is 90 lines, and every decision
   it makes is a status bit.
+- A DMA writer must not outlive its buffer. A freed framebuffer is
+  the kernel's to hand to anyone, and a VDMA still writing it sixty
+  times a second corrupts page cache and, through writeback, the SD
+  card underneath. Two "dying" cards were this one bug. Halt the
+  write channel in every exit path; the read side may keep the
+  picture -- reads hurt nobody.
+- A warm reboot does not clear the PL. Halt fabric DMA writers
+  BEFORE rebooting (one devmem poke), or the new kernel boots under
+  fire from the old design.
+- A clock island is a workaround, not an architecture. With the
+  compiler placing pipeline registers from its traced depth model,
+  the ISP rides the receiver's clock and the island retires.
+- The last picoseconds belong to the tools: escalate post-route
+  phys_opt, then reseed placement (Explore). An RTL fix below a
+  hundred picoseconds of WNS is chasing placement noise.
 
 ## Funding
 

@@ -35,3 +35,7 @@ set_property -dict { PACKAGE_PIN K19 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_da
 set_property -dict { PACKAGE_PIN J19 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_n[1]}]
 set_property -dict { PACKAGE_PIN J18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_p[2]}]
 set_property -dict { PACKAGE_PIN H18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_n[2]}]
+
+# The header's facts (blrx hdr_* -> isp ctx_*) are same-domain now:
+# the ISP rides the receiver's pixel clock, so those are ordinary
+# timed paths and get no exception.

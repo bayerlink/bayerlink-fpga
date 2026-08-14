@@ -9,9 +9,13 @@ set_param general.maxThreads 1
 open_checkpoint [file join $here build placed.dcp]
 route_design
 # Post-route physical optimization: the last tens of picoseconds are
-# placement's to give back, not the RTL's to chase.
-if {[get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]] < 0} {
-    phys_opt_design
+# placement's to give back, not the RTL's to chase. Escalate until the
+# slack is met or the directives run out.
+foreach directive {Default AggressiveExplore AggressiveFanoutOpt} {
+    if {[get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]] >= 0} {
+        break
+    }
+    phys_opt_design -directive $directive
 }
 puts "WNS: [get_property SLACK [get_timing_paths -max_paths 1 -nworst 1 -setup]]"
 # When timing fails, the path IS the diagnosis: print the worst three.

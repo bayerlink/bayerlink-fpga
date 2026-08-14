@@ -31,10 +31,13 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=512)
     parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--bits", type=int, default=10)
-    parser.add_argument("--clock-mhz", type=float, default=66.666,
-                        help="the ISP island's clock; every pointwise "
-                             "stage is DEPTH-CHECKED against it at "
-                             "generation time, by arithmetic on the "
+    parser.add_argument("--clock-mhz", type=float, default=148.5,
+                        help="the ISP's clock: the receiver's pixel "
+                             "clock, constrained at the fastest legal "
+                             "link. Every pointwise stage is depth-"
+                             "checked against it at generation time; a "
+                             "too-deep stage is CUT into pipeline "
+                             "stages there, by arithmetic on the "
                              "traced expression graph")
     args = parser.parse_args()
 
@@ -106,6 +109,14 @@ def main() -> None:
     a("module revela_isp (")
     a("    input  wire        clk,")
     a("    input  wire        rst,")
+    a("    // The header's facts, straight from the receiver: the stream")
+    a("    // owns its geometry and phase; the build owns only maximums.")
+    a("    // Latched as each frame's SOF enters, so a change lands on a")
+    a("    // frame boundary -- the pend/active pattern, third outing.")
+    a("    input  wire [15:0] hdr_width,")
+    a("    input  wire [15:0] hdr_height,")
+    a("    input  wire [1:0]  hdr_phase,")
+    a("    input  wire [4:0]  hdr_bits,")
     a("    input  wire        in_valid,")
     a("    output wire        in_ready,")
     a("    input  wire [15:0] in_data,   // v2 receiver lane; low bits used")
@@ -119,15 +130,25 @@ def main() -> None:
     a("    output wire        out_eol,")
     a("    output wire        out_last")
     a(");")
+    a(f"    reg [15:0] ctx_w = 16'd{args.width};")
+    a(f"    reg [15:0] ctx_h = 16'd{args.height};")
+    a("    reg [1:0]  ctx_ph = 2'd2;")
+    a(f"    reg [4:0]  ctx_bd = 5'd{args.bits};")
+    a("    always @(posedge clk)")
+    a("        if (in_valid && in_ready && in_sof) begin")
+    a("            ctx_w  <= hdr_width;")
+    a("            ctx_h  <= hdr_height;")
+    a("            ctx_ph <= hdr_phase;")
+    a("            ctx_bd <= hdr_bits;")
+    a("        end")
     a("    revela_isp_core core (")
     a("        .clk(clk), .rst(rst),")
-    a(f"        .ctx_width(16'd{args.width}),")
-    a(f"        .ctx_height(16'd{args.height}),")
+    a("        .ctx_width(ctx_w),")
+    a("        .ctx_height(ctx_h),")
     a("        .ctx_window_x0(16'd0), .ctx_window_y0(16'd0),")
-    a(f"        .ctx_window_x1(16'd{args.width}), "
-      f".ctx_window_y1(16'd{args.height}),")
-    a("        .ctx_bayer_phase(2'd2),   // GBRG: the OV5647 crop's phase")
-    a(f"        .ctx_bit_depth(5'd{args.bits}),")
+    a("        .ctx_window_x1(ctx_w), .ctx_window_y1(ctx_h),")
+    a("        .ctx_bayer_phase(ctx_ph),")
+    a("        .ctx_bit_depth(ctx_bd),")
     for pos, colour in (("0_0", "r"), ("0_1", "gr"), ("1_0", "gb"),
                         ("1_1", "b")):
         a(f"        .param_bl_offset_{pos}(-16'sd{PEDESTAL}),")
