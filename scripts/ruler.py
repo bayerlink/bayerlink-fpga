@@ -34,6 +34,10 @@ def main() -> int:
                         help="start the read this many pixels "
                              "into the buffer (must keep the address "
                              "64-byte aligned: multiples of 16 pixels)")
+    parser.add_argument("--noise", action="store_true",
+                        help="fill with random pixels instead of the "
+                             "pattern: maximum transition density, which "
+                             "is what a marginal TMDS link fails on")
     parser.add_argument("--vsize", type=int, default=0,
                         help="lines per VDMA frame (0 = the full frame). "
                              "1 makes every screen line show ONE buffer "
@@ -88,6 +92,9 @@ def main() -> int:
     # software means writing it in the hardware's order, or every colour
     # name in the conversation is wrong -- which is how this pattern's
     # first outing got described in colours nobody had chosen.
+    if args.noise:
+        img = np.random.default_rng(1).integers(0, 256, img.shape,
+                                                dtype=np.uint8)
     fb[:, :, 0] = img[:, :, 1]      # G
     fb[:, :, 1] = img[:, :, 2]      # B
     fb[:, :, 2] = img[:, :, 0]      # R

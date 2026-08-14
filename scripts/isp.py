@@ -24,7 +24,7 @@ ISP_W, ISP_H = 1920, 1080   # the TV's best defines the sensor's ask
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bit", default="rx.bit")
-    parser.add_argument("--skew", type=int, default=336,
+    parser.add_argument("--skew", type=int, default=352,
                         help="pixels to advance the scanout read by, to "
                              "cancel the read engine's own marker-to-data "
                              "lag. MEASURED per bitstream with scripts/"
@@ -95,9 +95,16 @@ def main() -> int:
         s1 = gpio.read(0)
         s2 = gpio.read(0x8)
         hdr = s1 >> 18
+        # scanout's status word: sof-per-frame[2:0], locked, armed,
+        # underflow, misalign, refused. Exactly one start-of-frame beat
+        # per frame is correct; anything else means the stream's framing
+        # is not what the raster is anchoring to.
+        sc = (s2 >> 17) & 0x7FFF
         print(f"{tag}: lock={s1 & 1} ovf={(s1 >> 1) & 1} "
-              f"refused={hdr & 1} bits={(hdr >> 4) & 0x1F} "
-              f"tx_aligned={(s2 >> 22) & 1} "
+              f"refused={hdr & 1} bits={(hdr >> 4) & 0x1F} | scanout "
+              f"armed={(sc >> 4) & 1} under={(sc >> 5) & 1} "
+              f"misalign={(sc >> 6) & 1} win_refused={(sc >> 7) & 1} "
+              f"sof/frame={sc & 7} | "
               f"s2mm_sr={vdma.read(0x34):#x} mm2s_sr={vdma.read(0x04):#x}")
 
     report("up")

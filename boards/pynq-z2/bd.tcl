@@ -10,7 +10,7 @@ set_property board_part tul.com.tw:pynq-z2:part0:1.0 [current_project]
 set_property ip_repo_paths [file join $root vivado-library] [current_project]
 update_ip_catalog
 
-add_files [file join $root hdl vid_push.v] \
+add_files [file join $root hdl generated scanout.v] \
     [file join $root hdl stream_switch.v] [file join $root hdl axis_unpack.v] \
     [file join $root hdl isp_axis.v] [file join $root hdl generated revela_isp.v] \
     [file join $root hdl generated bayerlink_rx.v] \
@@ -160,35 +160,31 @@ set_property -dict [list CONFIG.PRIM_IN_FREQ {200.000} \
 connect_bd_net [get_bd_pins ps7/FCLK_CLK1] [get_bd_pins clk_out/clk_in1]
 
 # No v_tc, no v_axi4s_vid_out: that pair's lock was never witnessed
-# here across every mode it offers. The raster is OURS -- vid_push
-# carries the exact counters the port prover lit a display with, and
-# pops the VDMA stream one beat per active pixel. Its alignment and
-# underflow decisions are status bits, not a lock to pray over.
+# here across every mode it offers. The raster is GENERATED -- np2hw's
+# scanout, emitted from the one raster table, arriving with the claims
+# this bench paid for: a frame may be dropped but never displaced, a
+# window that does not fit is refused rather than clipped, and pixel
+# and enable leave on the same clock. Placement is baked by
+# gen/scanout.py until the register file lands.
 set tx [create_bd_cell -type ip -vlnv digilentinc.com:ip:rgb2dvi hdmi_tx]
 # kClkRange 1: the >=120 MHz bucket (MULT_F = range*5, so 148.5 * 5
 # = 742.5 VCO, serial clock 742.5 -> 1.485 Gb/s per TMDS pair).
 set_property -dict [list CONFIG.kGenerateSerialClk {true} \
     CONFIG.kClkPrimitive {MMCM} CONFIG.kClkRange {1} \
     CONFIG.kRstActiveHigh {true}] $tx
-set vp [create_bd_cell -type module -reference vid_push vid_push]
-# 1080p60 CEA-861: 2200x1125 total, 1920x1080 active. The raster is a
-# parameter set; vid_push defaults stay 720p for the next bring-up.
-set_property -dict [list CONFIG.H_TOT {2200} CONFIG.V_TOT {1125} \
-    CONFIG.H_ACT {1920} CONFIG.V_ACT {1080} \
-    CONFIG.HS_BEG {2008} CONFIG.HS_END {2052} \
-    CONFIG.VS_BEG {1084} CONFIG.VS_END {1089}] $vp
-connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vid_push/clk]
-connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins vid_push/locked]
-connect_bd_intf_net [get_bd_intf_pins vid_push/vid_io] [get_bd_intf_pins hdmi_tx/RGB]
+set vp [create_bd_cell -type module -reference scanout_top scanout]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins scanout/clk]
+connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins scanout/locked]
+connect_bd_intf_net [get_bd_intf_pins scanout/vid_io] [get_bd_intf_pins hdmi_tx/RGB]
 connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins hdmi_tx/PixelClk]
 make_bd_intf_pins_external [get_bd_intf_pins hdmi_tx/TMDS]
 set_property name hdmi_tx [get_bd_intf_ports TMDS_0]
 
 # VDMA grows its read side: the framebuffer out.
-# The read stream lives on the PIXEL clock: vid_push pops at raster
+# The read stream lives on the PIXEL clock: scanout pops at raster
 # pace with no elastic in between beyond the vdma's own line buffer.
 # The stream stays 32-bit (the core refuses 24): xRGB pixels, and
-# vid_push takes the low three bytes of each beat.
+# scanout takes the low three bytes of each beat.
 # FREE-RUN, explicitly: propagation once slipped in use_fsync=1 and
 # genlock-slave -- a scheduler waiting forever on a sync and a frame
 # pointer that nothing drives. Running-while-starving, no error bit.
@@ -197,7 +193,7 @@ set_property -dict [list CONFIG.c_include_mm2s {1} \
     CONFIG.c_use_fsync {0} \
     CONFIG.c_mm2s_genlock_mode {0} \
     CONFIG.c_s2mm_genlock_mode {0}] $vdma
-connect_bd_intf_net [get_bd_intf_pins vdma/M_AXIS_MM2S] [get_bd_intf_pins vid_push/s_axis]
+connect_bd_intf_net [get_bd_intf_pins vdma/M_AXIS_MM2S] [get_bd_intf_pins scanout/s_axis]
 connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vdma/m_axis_mm2s_aclk]
 # m_axi_mm2s_aclk is wired by the HP1 automation below.
 
@@ -244,7 +240,7 @@ set cat2 [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat status2_cat]
 set_property CONFIG.NUM_PORTS {3} $cat2
 connect_bd_net [get_bd_pins spy_cdc/status] [get_bd_pins status2_cat/In0]
 connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins status2_cat/In1]
-connect_bd_net [get_bd_pins vid_push/status] [get_bd_pins status2_cat/In2]
+connect_bd_net [get_bd_pins scanout/status] [get_bd_pins status2_cat/In2]
 connect_bd_net [get_bd_pins status2_cat/dout] [get_bd_pins status_gpio/gpio2_io_i]
 # The v2 receiver's verdicts and header facts, packed for one read:
 # {hdr_phase[1:0], hdr_valid, hdr_bits[4:0], refuse_code[2:0], refused}
@@ -322,7 +318,7 @@ connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/s_axis_aresetn]
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc_isp/s_axis_aresetn]
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc_isp/m_axis_aresetn]
-connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins vid_push/rst]
+connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins scanout/rst]
 # The prover's reset recipe, kept verbatim: rgb2dvi held in reset by
 # nothing but the pixel MMCM's own lock.
 set lockinv [create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic lock_inv]
