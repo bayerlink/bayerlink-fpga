@@ -54,7 +54,8 @@ def main() -> None:
     chain = [("bl", "blacklevel", None),
              ("wb", "whitebalance", None),
              ("dm", "bilinear", None),
-             ("gm", "rgb_gamma", {"knots": {"bits": args.bits + 1}})]
+             ("gm", "rgb_gamma", {"knots": {"bits": args.bits + 1}}),
+             ("lg", "logo", None)]
     for name, kind, regs in chain:
         p.add(name, reg[kind], registers=regs)
     src = "isp_in"
@@ -76,6 +77,7 @@ def main() -> None:
     from revela import run as runner
     values = {
         "dm": {},
+        "lg": {},
         "bl": {f"offset_{pos}": -PEDESTAL
                for pos in ("0_0", "0_1", "1_0", "1_1")},
         "wb": {"gain_0_0": WB["r"], "gain_0_1": WB["gr"],

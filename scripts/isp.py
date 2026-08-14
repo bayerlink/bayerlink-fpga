@@ -24,6 +24,12 @@ ISP_W, ISP_H = 1920, 1080   # the TV's best defines the sensor's ask
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bit", default="rx.bit")
+    parser.add_argument("--skew", type=int, default=336,
+                        help="pixels to advance the scanout read by, to "
+                             "cancel the read engine's own marker-to-data "
+                             "lag. MEASURED per bitstream with scripts/"
+                             "ruler.py and a capture card; must stay a "
+                             "multiple of 16 (64-byte aligned)")
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="status loop duration; 0 = forever")
     args = parser.parse_args()
@@ -45,14 +51,23 @@ def main() -> int:
         print("no receiver activity: is the source streaming?")
         return 2
 
-    fb = allocate(shape=(MODE_H, MODE_W, 4), dtype="u1")
+    # One spare line: the scanout starts `skew` pixels in, so its last
+    # line reads that far past the picture. Better to own those bytes
+    # than to read whatever follows the buffer.
+    fb = allocate(shape=(MODE_H + 1, MODE_W, 4), dtype="u1")
     fb[:] = 16
     fb.flush()
 
     # Read side: the raster scans the whole frame, forever.
+    # The read engine's data lags its own start-of-frame marker by a
+    # fixed number of beats -- proven by a self-test raster, which
+    # paints from its own counters and lands pixel-perfect, while the
+    # same design fed from memory is displaced. So start the read that
+    # far in. The number is MEASURED per bitstream (ruler.py + capture
+    # card); it goes away when scanout owns its own framebuffer reader.
     vdma.write(0x00, 0x3)
     for n in range(3):
-        vdma.write(0x5C + 4 * n, fb.physical_address)
+        vdma.write(0x5C + 4 * n, fb.physical_address + args.skew * 4)
     vdma.write(0x58, MODE_W * 4)
     vdma.write(0x54, MODE_W * 4)
     vdma.write(0x50, MODE_H)

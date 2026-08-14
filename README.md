@@ -176,6 +176,24 @@ Lessons this repo already paid for, so you do not have to:
 - The last picoseconds belong to the tools: escalate post-route
   phys_opt, then reseed placement (Explore). An RTL fix below a
   hundred picoseconds of WNS is chasing placement noise.
+- A raster must not start a frame on faith. If the read engine has
+  not delivered that frame's first beat when active video begins,
+  starting anyway paints the WHOLE frame displaced by the gap -- and
+  no audit downstream can see it, because a beat that has not
+  arrived carries no evidence. Arm per frame: a frame may be
+  dropped, never displaced.
+- The AXI VDMA's MM2S data lags its own start-of-frame marker by a
+  fixed number of beats, constant for a bitstream and different
+  between bitstreams (306, 322, 338 here). It does NOT depend on the
+  buffer's address. Advance the read by the measured amount and give
+  the buffer a spare line.
+- When a picture is in the wrong place, bisect before theorising: a
+  raster that paints from its OWN counters, ignoring the stream,
+  separates "my timing is wrong" from "the data arrives wrong" in
+  one build. Hours of hardware guessing did not.
+- A reader must not outlive its buffer either. It corrupts nothing,
+  but it faithfully displays whatever the kernel puts in those
+  pages, which looks exactly like broken hardware.
 
 ## Funding
 
