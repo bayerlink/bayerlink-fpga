@@ -1,18 +1,26 @@
 // Copyright 2026 Serge Rabyking
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-// Framebuffer-to-raster push. Owns the 720p timing outright -- the
-// same fabric counters the port prover lit a display with -- and pops
+// Framebuffer-to-raster push. Owns its timing outright -- the same
+// fabric counters the port prover lit a display with -- and pops
 // one AXIS beat per active pixel from the VDMA read stream. Replaces
 // v_axi4s_vid_out, whose lock was never once witnessed here; every
 // alignment decision this block makes is a readable status bit.
+// The raster is a parameter set (defaults: 720p60); the board file
+// states the mode it feeds the display.
 //
 // Alignment: while unaligned, beats are discarded during vertical
 // blanking until the next pending beat carries start-of-frame; that
 // beat is left waiting and becomes pixel (0,0). Each frame start
 // audits that the consumed beat really is a SOF; a mismatch drops
 // back to hunting. Underflow paints magenta and sticks a bit.
-module vid_push (
-    input  wire        clk,     // 74.25 MHz pixel clock
+module vid_push #(
+    // 720p60 CEA-861 defaults: 1650x750 total, 1280x720 active
+    parameter H_TOT  = 1650, parameter V_TOT  = 750,
+    parameter H_ACT  = 1280, parameter V_ACT  = 720,
+    parameter HS_BEG = 1390, parameter HS_END = 1430,
+    parameter VS_BEG = 725,  parameter VS_END = 730
+) (
+    input  wire        clk,     // the raster's pixel clock
     input  wire        rst,     // software broom, active high
     input  wire        locked,  // pixel MMCM's own testimony
     (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TDATA" *)
@@ -35,11 +43,8 @@ module vid_push (
     output reg         vid_vsync,
     output wire [14:0] status
 );
-    // 720p60 CEA-861: 1650x750 total, 1280x720 active, +hsync +vsync
-    localparam H_TOT = 1650, V_TOT = 750, H_ACT = 1280, V_ACT = 720,
-               HS_BEG = 1390, HS_END = 1430, VS_BEG = 725, VS_END = 730;
     reg [11:0] x;
-    reg [9:0]  y;
+    reg [10:0] y;
     wire active = (x < H_ACT) && (y < V_ACT);
     wire frame0 = (x == 0) && (y == 0);
     wire blank  = (y >= V_ACT);
@@ -63,7 +68,7 @@ module vid_push (
             underflow <= 0; misalign <= 0; sof_seen <= 0;
         end else begin
             x <= (x == H_TOT-1) ? 12'd0 : x + 12'd1;
-            if (x == H_TOT-1) y <= (y == V_TOT-1) ? 10'd0 : y + 10'd1;
+            if (x == H_TOT-1) y <= (y == V_TOT-1) ? 11'd0 : y + 11'd1;
 
             // outputs share one register stage: the raster stays rigid
             vid_hsync <= (x >= HS_BEG) && (x < HS_END);

@@ -106,18 +106,22 @@ def main() -> int:
 
     frames = 0
     t0 = time.time()
-    while time.time() - t0 < args.seconds:
-        packet()                                # align on a frame boundary
-        words = packet()
-        if len(words) != n:
-            continue
-        gray = ((words & 0xFFFF) >> shift).astype("u1").reshape(
-            args.height, args.width)
-        fb[y0:y0 + args.height, x0:x0 + args.width, 0] = gray
-        fb[y0:y0 + args.height, x0:x0 + args.width, 1] = gray
-        fb[y0:y0 + args.height, x0:x0 + args.width, 2] = gray
-        fb.flush()
-        frames += 1
+    try:
+        while time.time() - t0 < args.seconds:
+            packet()                            # align on a frame boundary
+            words = packet()
+            if len(words) != n:
+                continue
+            gray = ((words & 0xFFFF) >> shift).astype("u1").reshape(
+                args.height, args.width)
+            fb[y0:y0 + args.height, x0:x0 + args.width, 0] = gray
+            fb[y0:y0 + args.height, x0:x0 + args.width, 1] = gray
+            fb[y0:y0 + args.height, x0:x0 + args.width, 2] = gray
+            fb.flush()
+            frames += 1
+    finally:
+        # A writer must not outlive its buffer (see judge.py).
+        dma.write(0x30, 0)
     print(f"{frames} frames shown in {args.seconds:.0f}s "
           f"({frames / max(args.seconds, 1):.1f} fps through the ARM)")
     return 0
