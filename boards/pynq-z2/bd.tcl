@@ -26,10 +26,19 @@ apply_bd_automation -rule xilinx.com:bd_rule:processing_system7 \
     -config {make_external "FIXED_IO, DDR" apply_board_preset "1"} $ps
 set_property -dict [list \
     CONFIG.PCW_USE_S_AXI_HP0 {1} \
+    CONFIG.PCW_USE_S_AXI_HP1 {1} \
     CONFIG.PCW_EN_CLK1_PORT {1} \
+    CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ {142.857143} \
     CONFIG.PCW_FPGA1_PERIPHERAL_FREQMHZ {200} \
+    CONFIG.PCW_EN_CLK2_PORT {1} \
+    CONFIG.PCW_FPGA2_PERIPHERAL_FREQMHZ {100} \
     CONFIG.PCW_USE_FABRIC_INTERRUPT {1} \
     CONFIG.PCW_IRQ_F2P_INTR {1}] $ps
+# FCLK0 (every AXI clock here) at 142.86, not 100: a 1080p60 scanout
+# READS 497 MB/s sustained, and a 64-bit HP port at 100 MHz peaks at
+# 800 -- close enough to the edge that the raster starves and the
+# display path spends its life re-hunting the frame start. The PS can
+# make 1000/7; it cannot make 150.
 
 # --- TMDS decode
 set dvi [create_bd_cell -type ip -vlnv digilentinc.com:ip:dvi2rgb dvi_rx]
@@ -78,24 +87,33 @@ connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins shim/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins sw/a_$s] [get_bd_pins shim/in_$s]
 }
-# --- the ISP branch: ONE domain with the receiver. The pixel clock is
-# constrained at 148.5 MHz (the fastest legal link) and the revela
-# pipeline is generated against that same budget -- the traced depth
-# model cuts any too-deep stage into pipeline stages at generation
-# time, so the island and its clock converter are gone.
+# --- the ISP branch. At 1280 wide this rode the receiver's own clock:
+# the compiler cut every stage to 148.5 and the island retired. At
+# 1920 it does NOT fit -- a line buffer's read cone grows with the
+# line (the address mux, a 1920-deep distributed RAM, the edge muxes),
+# and that cone misses the budget by about 0.2 ns however the placer
+# is asked. So the wide pipeline gets a 100 MHz island back, which is
+# ample for a 62 Mpixel/s source, until np2hw learns the registered
+# line-buffer read (block RAM) that retires it for good -- the same
+# lesson the receiver's FIFO already taught at 148.5.
 set shimb [create_bd_cell -type module -reference rx_axis shim_isp]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins shim_isp/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins sw/b_$s] [get_bd_pins shim_isp/in_$s]
 }
+set cdc2 [create_bd_cell -type ip -vlnv xilinx.com:ip:axis_clock_converter cdc_isp]
+connect_bd_intf_net [get_bd_intf_pins shim_isp/m_axis] [get_bd_intf_pins cdc_isp/S_AXIS]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins cdc_isp/s_axis_aclk]
+connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins cdc_isp/m_axis_aclk]
 set unp [create_bd_cell -type module -reference axis_unpack unpack_isp]
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins unpack_isp/clk]
-connect_bd_intf_net [get_bd_intf_pins shim_isp/m_axis] [get_bd_intf_pins unpack_isp/s_axis]
+connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins unpack_isp/clk]
+connect_bd_intf_net [get_bd_intf_pins cdc_isp/M_AXIS] [get_bd_intf_pins unpack_isp/s_axis]
 set isp [create_bd_cell -type module -reference revela_isp isp]
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp/clk]
+connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins isp/clk]
 # The stream's own facts drive the pipeline context: header to ctx,
-# one owner end to end, and now one CLOCK end to end -- an ordinary
-# timed path, no CDC exception needed.
+# one owner end to end. Quasi-static by construction (they change at
+# header-accept, a full line before payload); the wrapper latches
+# them on each frame's SOF in its own domain (false-pathed in the XDC).
 foreach f {width height phase bits} {
     connect_bd_net [get_bd_pins blrx/hdr_$f] [get_bd_pins isp/hdr_$f]
 }
@@ -103,7 +121,7 @@ foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins unpack_isp/out_$s] [get_bd_pins isp/in_$s]
 }
 set iax [create_bd_cell -type module -reference isp_axis isp_out]
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp_out/clk]
+connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins isp_out/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp/out_$s] [get_bd_pins isp_out/in_$s]
 }
@@ -123,19 +141,23 @@ connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins spy_cdc/clk]
 connect_bd_intf_net [get_bd_intf_pins cdc/M_AXIS] [get_bd_intf_pins spy_cdc/s_axis]
 connect_bd_intf_net [get_bd_intf_pins spy_cdc/m_axis] [get_bd_intf_pins dma/S_AXIS_S2MM]
 
-# --- display side: the same 720p the receiver listens to, sourced from
-# a framebuffer in DDR. Pixel clock is OURS (static 74.25 from FCLK0);
-# rgb2dvi makes its own 5x serial clock (MMCM: 742.5 sits inside the
-# MMCM VCO window; a PLL's floor is above it).
+# --- display side: 1080p60 out -- the TV's best is the target, and
+# the sensor is configured to serve it. Pixel clock is OURS (static
+# 148.5 from FCLK0); rgb2dvi makes its own 5x serial clock (MMCM:
+# 742.5 sits inside the MMCM VCO window; a PLL's floor is above it).
 set cw [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz clk_out]
 # No_buffer: FCLK arrives from the PS already buffered; the default
 # expects a package PIN and builds an input path to nowhere -- an MMCM
 # that never sees an edge, and a perfectly silent dead clock.
-set_property -dict [list CONFIG.PRIM_IN_FREQ {100.000} \
+# Fed from FCLK1 (200 MHz), not FCLK0: the AXI clock moved to 1000/7
+# for scanout bandwidth, and 142.86 cannot synthesize an exact 148.5
+# (the nearest fractional divide lands 0.24% low). 200 x 3.7125 =
+# 742.5 VCO, /5 = 148.5 exactly -- the same VCO the 74.25 recipe used.
+set_property -dict [list CONFIG.PRIM_IN_FREQ {200.000} \
     CONFIG.PRIM_SOURCE {No_buffer} \
-    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {74.250} \
+    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {148.500} \
     CONFIG.USE_LOCKED {true} CONFIG.USE_RESET {false}] $cw
-connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins clk_out/clk_in1]
+connect_bd_net [get_bd_pins ps7/FCLK_CLK1] [get_bd_pins clk_out/clk_in1]
 
 # No v_tc, no v_axi4s_vid_out: that pair's lock was never witnessed
 # here across every mode it offers. The raster is OURS -- vid_push
@@ -143,10 +165,18 @@ connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins clk_out/clk_in1]
 # pops the VDMA stream one beat per active pixel. Its alignment and
 # underflow decisions are status bits, not a lock to pray over.
 set tx [create_bd_cell -type ip -vlnv digilentinc.com:ip:rgb2dvi hdmi_tx]
+# kClkRange 1: the >=120 MHz bucket (MULT_F = range*5, so 148.5 * 5
+# = 742.5 VCO, serial clock 742.5 -> 1.485 Gb/s per TMDS pair).
 set_property -dict [list CONFIG.kGenerateSerialClk {true} \
-    CONFIG.kClkPrimitive {MMCM} CONFIG.kClkRange {2} \
+    CONFIG.kClkPrimitive {MMCM} CONFIG.kClkRange {1} \
     CONFIG.kRstActiveHigh {true}] $tx
 set vp [create_bd_cell -type module -reference vid_push vid_push]
+# 1080p60 CEA-861: 2200x1125 total, 1920x1080 active. The raster is a
+# parameter set; vid_push defaults stay 720p for the next bring-up.
+set_property -dict [list CONFIG.H_TOT {2200} CONFIG.V_TOT {1125} \
+    CONFIG.H_ACT {1920} CONFIG.V_ACT {1080} \
+    CONFIG.HS_BEG {2008} CONFIG.HS_END {2052} \
+    CONFIG.VS_BEG {1084} CONFIG.VS_END {1089}] $vp
 connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vid_push/clk]
 connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins vid_push/locked]
 connect_bd_intf_net [get_bd_intf_pins vid_push/vid_io] [get_bd_intf_pins hdmi_tx/RGB]
@@ -163,13 +193,13 @@ set_property name hdmi_tx [get_bd_intf_ports TMDS_0]
 # genlock-slave -- a scheduler waiting forever on a sync and a frame
 # pointer that nothing drives. Running-while-starving, no error bit.
 set_property -dict [list CONFIG.c_include_mm2s {1} \
-    CONFIG.c_mm2s_linebuffer_depth {2048} \
+    CONFIG.c_mm2s_linebuffer_depth {4096} \
     CONFIG.c_use_fsync {0} \
     CONFIG.c_mm2s_genlock_mode {0} \
     CONFIG.c_s2mm_genlock_mode {0}] $vdma
 connect_bd_intf_net [get_bd_intf_pins vdma/M_AXIS_MM2S] [get_bd_intf_pins vid_push/s_axis]
 connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vdma/m_axis_mm2s_aclk]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins vdma/m_axi_mm2s_aclk]
+# m_axi_mm2s_aclk is wired by the HP1 automation below.
 
 # --- interrupts: the pynq drivers refuse to exist without them
 set irqcat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat irq_cat]
@@ -252,13 +282,15 @@ apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     [get_bd_intf_pins ps7/S_AXI_HP0]
 # NOT automation: its second pass built the dma a private interconnect
 # whose master port went to __NOC__ -- nowhere -- and called it a
-# warning. Both stream engines share the one interconnect, explicitly.
-set_property CONFIG.NUM_SI {3} [get_bd_cells axi_mem_intercon]
-connect_bd_intf_net [get_bd_intf_pins vdma/M_AXI_MM2S] \
-    [get_bd_intf_pins axi_mem_intercon/S02_AXI]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins axi_mem_intercon/S02_ACLK]
-connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins axi_mem_intercon/S00_ARESETN]] \
-    [get_bd_pins axi_mem_intercon/S02_ARESETN]
+# warning. The capture engines share this interconnect, explicitly.
+# The scanout read does NOT: 1080p60 is 594 MB/s sustained, and one
+# 800 MB/s HP port carrying that plus the ISP's write loses on plain
+# arithmetic. The read side gets a port of its own (HP1, below).
+set_property CONFIG.NUM_SI {2} [get_bd_cells axi_mem_intercon]
+apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
+    {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/vdma/M_AXI_MM2S} \
+     Slave {/ps7/S_AXI_HP1} ddr_seg {Auto} intc_ip {New AXI Interconnect} master_apm {0}} \
+    [get_bd_intf_pins ps7/S_AXI_HP1]
 connect_bd_intf_net [get_bd_intf_pins dma/M_AXI_S2MM] \
     [get_bd_intf_pins axi_mem_intercon/S01_AXI]
 connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins axi_mem_intercon/S01_ACLK]
@@ -268,7 +300,7 @@ connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins axi_mem_intercon/S00_A
 # Stream-side clocks the automation does not own: everything AXI in
 # this design lives on FCLK0, so the crossings are exactly the two
 # declared ones (TMDS pixel clock in, FCLK0 out).
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins vdma/s_axis_s2mm_aclk]
+connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins vdma/s_axis_s2mm_aclk]
 foreach pin {cdc/m_axis_aclk} {
     connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins $pin]
 }
@@ -288,6 +320,8 @@ connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins rstn_pix/Op1]
 # known state: converter (both sides), video-in (both sides), receiver.
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/s_axis_aresetn]
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
+connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc_isp/s_axis_aresetn]
+connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc_isp/m_axis_aresetn]
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins vid_push/rst]
 # The prover's reset recipe, kept verbatim: rgb2dvi held in reset by
 # nothing but the pixel MMCM's own lock.

@@ -17,8 +17,8 @@ import time
 
 from pynq import Overlay, allocate, MMIO
 
-MODE_W, MODE_H = 1280, 720
-ISP_W, ISP_H = 1280, 720    # the whole screen: the container grew instead
+MODE_W, MODE_H = 1920, 1080
+ISP_W, ISP_H = 1920, 1080   # the TV's best defines the sensor's ask
 
 
 def main() -> int:
