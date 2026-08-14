@@ -65,19 +65,26 @@ def main() -> int:
         return np.array(buffer[:got])
 
     passes = 0
-    for trial in range(args.frames):
-        packet()                          # partial: aligns the next one
-        words = packet()
-        data = (words & 0xFFFF).astype(np.int64)
-        sof = (words >> 17) & 1
-        eol = (words >> 16) & 1
-        ok = (len(words) == n and np.array_equal(data, expect)
-              and len(sof) and sof[0] == 1 and int(sof.sum()) == 1
-              and np.array_equal(np.flatnonzero(eol),
-                                 np.arange(1, args.height + 1) * args.width - 1))
-        passes += ok
-        print(f"frame {trial + 1}: {len(words)} samples ->",
-              "BIT-EXACT, FRAMING EXACT" if ok else "MISMATCH")
+    try:
+        for trial in range(args.frames):
+            packet()                      # partial: aligns the next one
+            words = packet()
+            data = (words & 0xFFFF).astype(np.int64)
+            sof = (words >> 17) & 1
+            eol = (words >> 16) & 1
+            ok = (len(words) == n and np.array_equal(data, expect)
+                  and len(sof) and sof[0] == 1 and int(sof.sum()) == 1
+                  and np.array_equal(np.flatnonzero(eol),
+                                     np.arange(1, args.height + 1) * args.width
+                                     - 1))
+            passes += ok
+            print(f"frame {trial + 1}: {len(words)} samples ->",
+                  "BIT-EXACT, FRAMING EXACT" if ok else "MISMATCH")
+    finally:
+        # A writer must not outlive its buffer: a killed run would leave
+        # the DMA holding this (about to be freed) address, writing into
+        # it whenever the stream next flows. Stop the engine first.
+        dma.write(0x30, 0)
     print(f"VERDICT: {passes}/{args.frames} frames exact")
     return 0 if passes == args.frames else 1
 
