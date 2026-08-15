@@ -71,12 +71,41 @@ gen/isp.py refuses to emit anything it has not first proved bit-exact
 against its NumPy model under Verilator, so a failed build there is a
 verification failure, not a tool problem.
 
+### Timing margin, and what your build will and will not match
+
+The design closes, but not with room to spare. Measured here on
+xc7z020-1 with Vivado 2025.2: **WNS +0.003 to +0.020 ns** at 148.5 MHz
+across the last few builds. A different Vivado, a different speed grade
+or a different seed may miss, and the lever that matters is placement --
+`place_design -directive ExtraTimingOpt` in `impl_a.tcl`. On one and the
+same design, `Explore` gave +0.001 and `ExtraTimingOpt` gave +0.055; the
+post-route physical-optimisation loop can only hand back what placement
+left on the table.
+
+Your bitstream will also not be byte-identical to the one in the demo
+video. The depth model has moved since that recording, so one block cuts
+into three pipeline stages where the filmed build used four. Both are
+twin-verified bit-exact against the same NumPy models and both close --
+the pixels are the same, the schedule is not.
+
 ### After the build: measure the scanout skew
 
-One number is NOT portable between builds and must be measured per
-bitstream: the read engine's data lags its own start-of-frame marker,
-so `scripts/isp.py --skew N` advances the scanout read to compensate.
-Values here have ranged 306-354 across builds. Measure it:
+One number must be measured, and it is measured PER LOCK -- not per
+bitstream, which is what this file used to claim. The read engine's data
+lags its own start-of-frame marker, and where the two meet is decided
+when the link comes up. Reloading the bitstream re-rolls it. So does the
+source disappearing and returning. Values seen on one unchanged
+bitstream: 0, 16, 48, 80.
+
+That has a practical consequence: do not bisect it by reloading, because
+every reload measures a different system. Measure once, correct once,
+and correct it LIVE -- rewriting the read engine's start addresses and
+then its VSIZE (which is what commits them) moves the picture without
+disturbing the lock.
+
+Use `scripts/mkpattern.py` to author a ruler AT YOUR PIPELINE'S OWN
+DEPTH; the built-in bayerlink patterns are 12-bit and a 10-bit ISP will
+refuse them, which looks like a geometry fault and is not. Measure it:
 
 ```sh
 python3 ruler.py --bit rx.bit          # landmarks on the screen
