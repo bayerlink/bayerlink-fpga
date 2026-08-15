@@ -27,12 +27,16 @@ W=${W:-1920}
 H=${H:-1080}
 BITS=${BITS:-10}
 ISP_MHZ=${ISP_MHZ:-148.5}
+RX_FIFO=${RX_FIFO:-256}
 
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here"
 
 echo "== receiver (np2hw bayerlink_in)"
-python3 gen/receiver.py --board "$BOARD"
+# --fifo-depth is PINNED, not left to the generator's default: the
+# verified bitstream was built at 256 and a different depth is a
+# different design. Raising it needs a rebuild and a re-measured skew.
+python3 gen/receiver.py --board "$BOARD" --fifo-depth "$RX_FIFO"
 
 echo "== ISP (revela pipeline, twin-verified before it emits)"
 python3 gen/isp.py --width "$W" --height "$H" --bits "$BITS" \
