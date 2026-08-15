@@ -46,18 +46,81 @@ board is constraints + a lane map + a judged capture — see the
 ## Build (PYNQ-Z2)
 
 ```sh
-pip install np2hw bayerlink
-python3 gen/receiver.py --board pynq-z2
+pip install np2hw bayerlink revela
 git clone --depth 1 https://github.com/Digilent/vivado-library.git
 git clone --depth 1 https://github.com/xupsh/pynq-supported-board-file.git board-files
-cd boards/pynq-z2
-vivado -mode batch -source bd.tcl
-vivado -mode batch -source impl_a.tcl
-vivado -mode batch -source impl_b.tcl      # -> out/rx.bit, out/rx.hwh
+./build.sh                                 # -> boards/pynq-z2/out/rx.bit + .hwh
 ```
+
+`build.sh` is the whole flow, and it exists because three of the four
+sources are GENERATED and none of them is committed: the receiver, the
+ISP and the display raster are emitted from their models, so a build
+that skips a generator fails on a missing file rather than quietly
+using a stale one. It runs:
+
+```sh
+python3 gen/receiver.py --board pynq-z2   # -> hdl/generated/bayerlink_rx.v
+python3 gen/isp.py  --width 1920 --height 1080 --clock-mhz 148.5
+python3 gen/scanout.py --mode 1080p60     # -> hdl/generated/scanout.v
+cd boards/pynq-z2 && vivado -mode batch -source bd.tcl
+vivado -mode batch -source impl_a.tcl
+vivado -mode batch -source impl_b.tcl
+```
+
+gen/isp.py refuses to emit anything it has not first proved bit-exact
+against its NumPy model under Verilator, so a failed build there is a
+verification failure, not a tool problem.
+
+### After the build: measure the scanout skew
+
+One number is NOT portable between builds and must be measured per
+bitstream: the read engine's data lags its own start-of-frame marker,
+so `scripts/isp.py --skew N` advances the scanout read to compensate.
+Values here have ranged 306-354 across builds. Measure it:
+
+```sh
+python3 ruler.py --bit rx.bit          # landmarks on the screen
+# find the magenta column (buffer x=0); if it sits at screen x=N,
+# then --skew is N rounded DOWN to a multiple of 16 (64-byte aligned)
+python3 isp.py --bit rx.bit --skew 352
+```
+
+A capture card makes this a measurement; a TV and a careful eye make it
+an estimate. The whole compensation disappears when scanout gains its
+own framebuffer reader and the vendor DMA goes.
 
 Any Vivado from 2025.2 works, containerized included (if yours crashes
 after "Routing Is Done", see the ledger: it is not your design).
+
+### Porting to another board
+
+Most of this design does not know what board it is on. The generated
+sources take their shape from arguments, not from a part number, and
+the ISP and the raster are proved against their models before they are
+emitted. So a port is a short, finite list -- and it is worth knowing
+exactly how short it is before you start:
+
+| what | where | how you get it |
+|---|---|---|
+| pin assignments | `boards/<board>/<board>.xdc` | your board's master XDC |
+| PS preset, DDR, HP ports | `boards/<board>/bd.tcl` | your board's preset or the vendor's own file |
+| the lane map | `gen/receiver.py --board` | SOLVED, not guessed: `bayerlink.pattern counting`, then `checker` |
+| the pixel clock | the link, not a choice | it is whatever your source sends |
+| the read engine's skew | measured per bitstream | the ruler, above |
+
+What you do NOT port: the receiver, the ISP and the raster themselves.
+They are generated for your width, depth and video mode, and they are
+timed by np2hw's traced depth model, which cuts each pipeline for the
+clock you name. A different speed grade shifts that model, not the
+design -- `np2hw.timing.FAMILIES` is where a device's constants live,
+and adding one is a table entry.
+
+The lane map deserves its own warning, because it is the one item that
+LOOKS like a guess and must not be. It is a fact about a platform pair,
+and the protocol carries test patterns precisely so it can be solved:
+`counting` gives the fingerprint, and `checker` breaks the byte-0/1 tie
+that counting cannot see. Guessing it produces a picture that is almost
+right, which is worse than one that is obviously wrong.
 
 ## Judge
 

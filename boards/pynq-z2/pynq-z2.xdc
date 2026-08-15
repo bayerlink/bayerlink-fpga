@@ -36,12 +36,7 @@ set_property -dict { PACKAGE_PIN J19 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_da
 set_property -dict { PACKAGE_PIN J18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_p[2]}]
 set_property -dict { PACKAGE_PIN H18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_n[2]}]
 
-# The header's facts cross from the pixel clock to the ISP island as
-# QUASI-STATIC values: they change at header-accept, a full line
-# before the frame's SOF -- and the wrapper samples them only on that
-# SOF, in its own domain. False-path these crossings SPECIFICALLY;
-# a blanket async clock group would also silence real CDC mistakes.
-# (At 1280 wide the ISP rode the receiver's own clock and this
-# exception was not needed; the wide build's island brings it back.)
-set_false_path -from [get_pins -hierarchical -filter {NAME =~ "*blrx*/hdr_*_reg*/C"}] \
-               -to   [get_pins -hierarchical -filter {NAME =~ "*isp*/ctx_*_reg*/D"}]
+# There is no ISP clock island any more, and so no CDC exception here:
+# once np2hw learned to read its line buffers through a register, the
+# wide pipeline closed on the receiver's own pixel clock and the
+# header's facts reach it as an ordinary timed path.

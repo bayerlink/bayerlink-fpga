@@ -30,8 +30,6 @@ set_property -dict [list \
     CONFIG.PCW_EN_CLK1_PORT {1} \
     CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ {142.857143} \
     CONFIG.PCW_FPGA1_PERIPHERAL_FREQMHZ {200} \
-    CONFIG.PCW_EN_CLK2_PORT {1} \
-    CONFIG.PCW_FPGA2_PERIPHERAL_FREQMHZ {100} \
     CONFIG.PCW_USE_FABRIC_INTERRUPT {1} \
     CONFIG.PCW_IRQ_F2P_INTR {1}] $ps
 # FCLK0 (every AXI clock here) at 142.86, not 100: a 1080p60 scanout
@@ -89,27 +87,20 @@ foreach s {valid ready data sof eol last} {
 }
 # --- the ISP branch. At 1280 wide this rode the receiver's own clock:
 # the compiler cut every stage to 148.5 and the island retired. At
-# 1920 it does NOT fit -- a line buffer's read cone grows with the
-# line (the address mux, a 1920-deep distributed RAM, the edge muxes),
-# and that cone misses the budget by about 0.2 ns however the placer
-# is asked. So the wide pipeline gets a 100 MHz island back, which is
-# ample for a 62 Mpixel/s source, until np2hw learns the registered
-# line-buffer read (block RAM) that retires it for good -- the same
-# lesson the receiver's FIFO already taught at 148.5.
+# 1920 it did not fit either, until np2hw learned to read its line
+# buffers THROUGH A REGISTER: block RAM instead of a distributed-RAM
+# select tree that deepens with the line. The island is retired and
+# the ISP rides the receiver's own clock again, at any width.
 set shimb [create_bd_cell -type module -reference rx_axis shim_isp]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins shim_isp/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins sw/b_$s] [get_bd_pins shim_isp/in_$s]
 }
-set cdc2 [create_bd_cell -type ip -vlnv xilinx.com:ip:axis_clock_converter cdc_isp]
-connect_bd_intf_net [get_bd_intf_pins shim_isp/m_axis] [get_bd_intf_pins cdc_isp/S_AXIS]
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins cdc_isp/s_axis_aclk]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins cdc_isp/m_axis_aclk]
 set unp [create_bd_cell -type module -reference axis_unpack unpack_isp]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins unpack_isp/clk]
-connect_bd_intf_net [get_bd_intf_pins cdc_isp/M_AXIS] [get_bd_intf_pins unpack_isp/s_axis]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins unpack_isp/clk]
+connect_bd_intf_net [get_bd_intf_pins shim_isp/m_axis] [get_bd_intf_pins unpack_isp/s_axis]
 set isp [create_bd_cell -type module -reference revela_isp isp]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins isp/clk]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp/clk]
 # The stream's own facts drive the pipeline context: header to ctx,
 # one owner end to end. Quasi-static by construction (they change at
 # header-accept, a full line before payload); the wrapper latches
@@ -121,7 +112,7 @@ foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins unpack_isp/out_$s] [get_bd_pins isp/in_$s]
 }
 set iax [create_bd_cell -type module -reference isp_axis isp_out]
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins isp_out/clk]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp_out/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp/out_$s] [get_bd_pins isp_out/in_$s]
 }
@@ -296,7 +287,7 @@ connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins axi_mem_intercon/S00_A
 # Stream-side clocks the automation does not own: everything AXI in
 # this design lives on FCLK0, so the crossings are exactly the two
 # declared ones (TMDS pixel clock in, FCLK0 out).
-connect_bd_net [get_bd_pins ps7/FCLK_CLK2] [get_bd_pins vdma/s_axis_s2mm_aclk]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins vdma/s_axis_s2mm_aclk]
 foreach pin {cdc/m_axis_aclk} {
     connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins $pin]
 }
@@ -316,8 +307,6 @@ connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins rstn_pix/Op1]
 # known state: converter (both sides), video-in (both sides), receiver.
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/s_axis_aresetn]
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
-connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc_isp/s_axis_aresetn]
-connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc_isp/m_axis_aresetn]
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins scanout/rst]
 # The prover's reset recipe, kept verbatim: rgb2dvi held in reset by
 # nothing but the pixel MMCM's own lock.
