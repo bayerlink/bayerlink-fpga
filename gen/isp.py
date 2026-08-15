@@ -21,13 +21,28 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 
-PEDESTAL = 64          # OV5647, 10-bit scale
-WB = {"r": 435, "gr": 256, "gb": 256, "b": 486}   # Q8.8, indoor guess
+PEDESTAL = 16          # OV5647, 10-bit scale; measured 15 in the dark
+# MEASURED here, from the slope of a ColorChecker's neutral ramp in this
+# garden's light. White balance and the colour matrix do DIFFERENT jobs:
+# the gains adapt to the ILLUMINANT (what an AWB loop would be doing
+# continuously), the matrix corrects the SENSOR's filters and is fixed.
+# The matrix assumes neutrals arrive already balanced -- its rows sum to
+# 256, so it preserves whatever cast reaches it rather than removing one.
+# The published generic gains under-corrected and left the picture green.
+# Fitted from the RAMP, not one grey patch, because red carries an offset
+# that does not scale with the light: IR past a weak cut filter.
+WB = {"r": 491, "gr": 256, "gb": 256, "b": 305}   # Q8.8, this light
 GAMMA = 2.2
 # Identity in Q.8: the matrix is WIRED but not yet CHOSEN. The daylight
 # set belongs with the pedestal and the white balance -- one coherent
 # change, judged on a screen -- not slipped in beside a structural one.
-CCM = [[256, 0, 0], [0, 256, 0], [0, 0, 256]]
+# The PUBLISHED 5890 K calibration for this sensor, not the one this
+# bench fitted. Ours came out with a 2.46x red diagonal because the
+# chart was measured through 9% veiling glare, and on real foliage --
+# which is violently IR-bright, and this module's IR-cut filter is weak
+# -- that turned every leaf red. A lab calibration beats a contaminated
+# one, and the failure mode is not visible on a chart.
+CCM = [[547, -167, -124], [-124, 494, -115], [-34, -140, 431]]
 
 
 def main() -> None:
