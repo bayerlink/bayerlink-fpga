@@ -19,7 +19,12 @@ foreach f [glob -nocomplain [file join $root vivado-library ip dvi2rgb src *.dat
 synth_design -top rx_wrapper -part xc7z020clg400-1
 opt_design
 # Explore: the last tens of picoseconds live in the placer's seed.
-place_design -directive Explore
+# Explore is the general-purpose choice; ExtraTimingOpt spends its
+# effort where this design needs it. The post-route physopt loop in
+# impl_b can give back tens of picoseconds, but only what placement
+# left on the table -- when it exhausts its directives at -0.027, the
+# next lever is here, not there.
+place_design -directive ExtraTimingOpt
 # Stop HERE: this process has a long allocation history, and heavy
 # commands' teardowns are where the container heap detonates. The
 # placed checkpoint hands a fresh process the short half.

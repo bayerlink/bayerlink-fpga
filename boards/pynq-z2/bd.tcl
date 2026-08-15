@@ -263,6 +263,23 @@ apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
     [get_bd_intf_pins ctrl_gpio/S_AXI]
+# The ISP's own coefficients, live. Its register file is clocked by the
+# PIXEL clock -- the same domain as the datapath it feeds, so a
+# coefficient never crosses into the arithmetic asynchronously -- and
+# the automation drops in the clock converter the PS side needs.
+# Geometry is NOT here: the header owns it and reaches the core by wire.
+# ...but only when the ISP HAS a bus. gen/isp.py emits either a baked
+# wrapper (coefficients compiled in, nothing to configure) or a control
+# wrapper (fifty live registers). One board file serves both, and asks
+# the design which one it got rather than being told.
+if {[llength [get_bd_intf_pins -quiet isp/S_AXI]]} {
+    apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
+        {Clk_master {Auto} Clk_slave {/dvi_rx/PixelClk} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
+        [get_bd_intf_pins isp/S_AXI]
+    puts "ISP: control plane present, register file on the bus"
+} else {
+    puts "ISP: coefficients are baked, no control interface"
+}
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/vdma/M_AXI_S2MM} \
      Slave {/ps7/S_AXI_HP0} ddr_seg {Auto} intc_ip {New AXI Interconnect} master_apm {0}} \
