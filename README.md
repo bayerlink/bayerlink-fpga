@@ -46,7 +46,7 @@ board is constraints + a lane map + a judged capture — see the
 ## Build (PYNQ-Z2)
 
 ```sh
-pip install np2hw bayerlink revela
+pip install np2hw==0.4.0 bayerlink==0.4.0 revela==0.1.0
 git clone --depth 1 https://github.com/Digilent/vivado-library.git
 git clone --depth 1 https://github.com/xupsh/pynq-supported-board-file.git board-files
 ./build.sh                                 # -> boards/pynq-z2/out/rx.bit + .hwh

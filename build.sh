@@ -18,7 +18,14 @@
 # generator for a pipeline too slow for the pixels arriving.
 #   MODE=720p60 W=1280 H=720 ./build.sh
 #
-# Needs: vivado on PATH, and `pip install np2hw bayerlink revela`.
+# Needs: vivado on PATH, and the generators, PINNED:
+#
+#   pip install np2hw==0.4.0 bayerlink==0.4.0 revela==0.1.0
+#
+# Pinned rather than latest because this repository claims a REPRODUCIBLE
+# demo: these are the versions the recorded bitstream was generated with,
+# and they produce byte-identical Verilog. Newer ones may be better and
+# will not be what was measured here.
 # Also needs vivado-library/ and board-files/ beside this file; see the
 # README for the two clone commands.
 BOARD=${BOARD:-pynq-z2}
