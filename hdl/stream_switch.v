@@ -5,23 +5,27 @@
 // (two readies, one truth), so the unselected side sees no valid and
 // offers no backpressure. Switch only across a broom pulse: mid-frame
 // flips are the reader's problem by construction.
-module stream_switch (
+module stream_switch #(
+    // Sample width. The receiver aligns to the build's depth, so
+    // this is that depth; 16 keeps a caller that never says.
+    parameter SAMPLE_BITS = 16
+) (
     input  wire        sel,        // 0: A (judge), 1: B (ISP)
     input  wire        in_valid,
     output wire        in_ready,
-    input  wire [15:0] in_data,
+    input  wire [SAMPLE_BITS-1:0] in_data,
     input  wire        in_sof,
     input  wire        in_eol,
     input  wire        in_last,
     output wire        a_valid,
     input  wire        a_ready,
-    output wire [15:0] a_data,
+    output wire [SAMPLE_BITS-1:0] a_data,
     output wire        a_sof,
     output wire        a_eol,
     output wire        a_last,
     output wire        b_valid,
     input  wire        b_ready,
-    output wire [15:0] b_data,
+    output wire [SAMPLE_BITS-1:0] b_data,
     output wire        b_sof,
     output wire        b_eol,
     output wire        b_last

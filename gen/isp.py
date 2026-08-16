@@ -137,6 +137,9 @@ def main() -> None:
     a("    input  wire        rst,")
     a("    // The header's facts, straight from the receiver: the stream")
     a("    // owns its geometry and phase; the build owns only maximums.")
+    a("    // NOT the depth: the receiver has already aligned samples to")
+    a("    // this build's, so hdr_bits is carried for software and no")
+    a("    // longer describes what arrives on in_data.")
     a("    // Latched as each frame's SOF enters, so a change lands on a")
     a("    // frame boundary -- the pend/active pattern, third outing.")
     a("    input  wire [15:0] hdr_width,")
@@ -145,7 +148,8 @@ def main() -> None:
     a("    input  wire [4:0]  hdr_bits,")
     a("    input  wire        in_valid,")
     a("    output wire        in_ready,")
-    a("    input  wire [15:0] in_data,   // v2 receiver lane; low bits used")
+    a(f"    input  wire [{args.bits - 1}:0] in_data,   // the receiver's "
+      "sample, already aligned to this depth")
     a("    input  wire        in_sof,")
     a("    input  wire        in_eol,")
     a("    input  wire        in_last,")
@@ -187,7 +191,7 @@ def main() -> None:
     for i, k in enumerate(knots):
         a(f"        .param_gm_knots_{i}({kw}'d{int(k)}),")
     a(f"        .isp_in_valid(in_valid), .isp_in_ready(in_ready),")
-    a(f"        .isp_in_data(in_data[{args.bits - 1}:0]),")
+    a("        .isp_in_data(in_data),")
     a("        .isp_in_sof(in_sof), .isp_in_eol(in_eol), "
       ".isp_in_last(in_last),")
     a("        .isp_out_valid(out_valid), .isp_out_ready(out_ready),")

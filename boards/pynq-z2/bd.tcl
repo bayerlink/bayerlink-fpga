@@ -69,6 +69,26 @@ set_property -dict [list CONFIG.c_include_mm2s {0} CONFIG.c_include_s2mm {1} \
     CONFIG.c_s2mm_linebuffer_depth {2048}] $vdma
 
 # --- R2 path: the unpacked line stream to DDR
+#
+# The sample width. The receiver ALIGNS every source depth to the depth
+# this build was made for, so one number describes the whole datapath
+# from its output to the ISP's input, and the glue is parameterised on
+# it rather than assuming a 16-bit lane. build.sh owns it and exports
+# it; the default matches build.sh's, so a hand-run of this script
+# produces the same design.
+set sample_bits [expr {[info exists ::env(BITS)] ? $::env(BITS) : 10}]
+
+# BUILD-TIME, like the sample width, and the second of its kind here.
+# The CAPTURE branch writes received frames to DDR so the ARM can judge
+# them against what the camera sent -- the tap that proved this link
+# bit-exact. It costs a DMA, a clock converter, an interconnect port
+# and the switch that exists only because there are two consumers, so a
+# build that is not being brought up should be able to leave it out.
+# Whether the board CAN is board business (it needs the PS and an HP
+# port); whether this build DOES is build.sh's. build.sh resolves the
+# two and exports the answer.
+set capture [expr {[info exists ::env(CAPTURE)] ? $::env(CAPTURE) : 1}]
+puts "bd.tcl: sample width $sample_bits bits, capture path $capture"
 set rx [create_bd_cell -type module -reference bayerlink_rx blrx]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins blrx/clk]
 foreach {a b} {vid_pData vid_data vid_pVDE vid_de vid_pVSync vid_vsync} {
@@ -76,14 +96,25 @@ foreach {a b} {vid_pData vid_data vid_pVDE vid_de vid_pVSync vid_vsync} {
 }
 # One stream, two consumers, a register deciding which: the judge's
 # byte-exact capture, or the ISP. The unselected side sees silence.
-set sw [create_bd_cell -type module -reference stream_switch sw]
-foreach s {valid ready data sof eol last} {
-    connect_bd_net [get_bd_pins blrx/out_$s] [get_bd_pins sw/in_$s]
-}
-set shim [create_bd_cell -type module -reference rx_axis shim]
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins shim/clk]
-foreach s {valid ready data sof eol last} {
-    connect_bd_net [get_bd_pins sw/a_$s] [get_bd_pins shim/in_$s]
+# With capture, one stream has two consumers and a register picks; the
+# ISP then reads the switch's B side. Without it there is one consumer,
+# so there is no switch, no select bit, and the ISP reads the receiver.
+# `isp_src` is whichever of the two the ISP branch is wired from.
+if {$capture} {
+    set sw [create_bd_cell -type module -reference stream_switch sw]
+    set_property CONFIG.SAMPLE_BITS $sample_bits $sw
+    foreach s {valid ready data sof eol last} {
+        connect_bd_net [get_bd_pins blrx/out_$s] [get_bd_pins sw/in_$s]
+    }
+    set shim [create_bd_cell -type module -reference rx_axis shim]
+    set_property CONFIG.SAMPLE_BITS $sample_bits $shim
+    connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins shim/clk]
+    foreach s {valid ready data sof eol last} {
+        connect_bd_net [get_bd_pins sw/a_$s] [get_bd_pins shim/in_$s]
+    }
+    set isp_src {sw/b}
+} else {
+    set isp_src {blrx/out}
 }
 # --- the ISP branch. At 1280 wide this rode the receiver's own clock:
 # the compiler cut every stage to 148.5 and the island retired. At
@@ -92,11 +123,13 @@ foreach s {valid ready data sof eol last} {
 # select tree that deepens with the line. The island is retired and
 # the ISP rides the receiver's own clock again, at any width.
 set shimb [create_bd_cell -type module -reference rx_axis shim_isp]
+set_property CONFIG.SAMPLE_BITS $sample_bits $shimb
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins shim_isp/clk]
 foreach s {valid ready data sof eol last} {
-    connect_bd_net [get_bd_pins sw/b_$s] [get_bd_pins shim_isp/in_$s]
+    connect_bd_net [get_bd_pins ${isp_src}_$s] [get_bd_pins shim_isp/in_$s]
 }
 set unp [create_bd_cell -type module -reference axis_unpack unpack_isp]
+set_property CONFIG.SAMPLE_BITS $sample_bits $unp
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins unpack_isp/clk]
 connect_bd_intf_net [get_bd_intf_pins shim_isp/m_axis] [get_bd_intf_pins unpack_isp/s_axis]
 set isp [create_bd_cell -type module -reference revela_isp isp]
@@ -117,6 +150,7 @@ foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp/out_$s] [get_bd_pins isp_out/in_$s]
 }
 connect_bd_intf_net [get_bd_intf_pins isp_out/m_axis] [get_bd_intf_pins vdma/S_AXIS_S2MM]
+if {$capture} {
 set cdc [create_bd_cell -type ip -vlnv xilinx.com:ip:axis_clock_converter cdc]
 connect_bd_intf_net [get_bd_intf_pins shim/m_axis] [get_bd_intf_pins cdc/S_AXIS]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins cdc/s_axis_aclk]
@@ -131,6 +165,7 @@ set_property -dict [list CONFIG.DW {32}] $spy
 connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins spy_cdc/clk]
 connect_bd_intf_net [get_bd_intf_pins cdc/M_AXIS] [get_bd_intf_pins spy_cdc/s_axis]
 connect_bd_intf_net [get_bd_intf_pins spy_cdc/m_axis] [get_bd_intf_pins dma/S_AXIS_S2MM]
+}
 
 # --- display side: 1080p60 out -- the TV's best is the target, and
 # the sensor is configured to serve it. Pixel clock is OURS (static
@@ -191,7 +226,14 @@ connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vdma/m_axis_mm2s_aclk
 # --- interrupts: the pynq drivers refuse to exist without them
 set irqcat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat irq_cat]
 connect_bd_net [get_bd_pins vdma/s2mm_introut] [get_bd_pins irq_cat/In0]
-connect_bd_net [get_bd_pins dma/s2mm_introut] [get_bd_pins irq_cat/In1]
+if {$capture} {
+    connect_bd_net [get_bd_pins dma/s2mm_introut] [get_bd_pins irq_cat/In1]
+} else {
+    # Same vector shape either way, so the driver's view does not move.
+    set irq0 [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant irq_tie]
+    set_property -dict [list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {0}] $irq0
+    connect_bd_net [get_bd_pins irq_tie/dout] [get_bd_pins irq_cat/In1]
+}
 connect_bd_net [get_bd_pins irq_cat/dout] [get_bd_pins ps7/IRQ_F2P]
 
 # --- software reset for the receiver: a sticky overflow needs a broom
@@ -202,17 +244,25 @@ set brm [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice broom]
 set_property -dict [list CONFIG.DIN_WIDTH {2} CONFIG.DIN_FROM {0} \
     CONFIG.DIN_TO {0}] $brm
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins broom/Din]
-set msel [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice isp_sel]
-set_property -dict [list CONFIG.DIN_WIDTH {2} CONFIG.DIN_FROM {1} \
-    CONFIG.DIN_TO {1}] $msel
-connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins isp_sel/Din]
-connect_bd_net [get_bd_pins isp_sel/Dout] [get_bd_pins sw/sel]
+# Bit 1 chooses the stream's consumer, which is only a choice when
+# there are two of them. Without capture the ISP is the only consumer
+# and the bit means nothing, so the slice is not built; bit 0, the
+# broom, is unaffected and keeps its meaning either way.
+if {$capture} {
+    set msel [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice isp_sel]
+    set_property -dict [list CONFIG.DIN_WIDTH {2} CONFIG.DIN_FROM {1} \
+        CONFIG.DIN_TO {1}] $msel
+    connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins isp_sel/Din]
+    connect_bd_net [get_bd_pins isp_sel/Dout] [get_bd_pins sw/sel]
+}
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins shim_isp/rst]
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins unpack_isp/rst]
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins isp/rst]
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins isp_out/rst]
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins blrx/rst]
-catch {connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins shim/rst]}
+if {$capture} {
+    catch {connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins shim/rst]}
+}
 
 # --- status: lock + overflow + the probe's testimony
 set probe [create_bd_cell -type module -reference vid_probe probe]
@@ -226,10 +276,20 @@ connect_bd_net [get_bd_pins blrx/out_valid] [get_bd_pins probe/rx_valid]
 set gpio [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio status_gpio]
 set_property -dict [list CONFIG.C_GPIO_WIDTH {30} CONFIG.C_ALL_INPUTS {1} \
     CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {32} CONFIG.C_ALL_INPUTS_2 {1}] $gpio
-connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins spy_cdc/rst]
+if {$capture} {
+    connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins spy_cdc/rst]
+}
 set cat2 [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat status2_cat]
 set_property CONFIG.NUM_PORTS {3} $cat2
-connect_bd_net [get_bd_pins spy_cdc/status] [get_bd_pins status2_cat/In0]
+if {$capture} {
+    connect_bd_net [get_bd_pins spy_cdc/status] [get_bd_pins status2_cat/In0]
+} else {
+    # The spy's 16 status bits read zero rather than moving every other
+    # field in the word: a host reading this register keeps its offsets.
+    set spy0 [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant spy_tie]
+    set_property -dict [list CONFIG.CONST_WIDTH {16} CONFIG.CONST_VAL {0}] $spy0
+    connect_bd_net [get_bd_pins spy_tie/dout] [get_bd_pins status2_cat/In0]
+}
 connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins status2_cat/In1]
 connect_bd_net [get_bd_pins scanout/status] [get_bd_pins status2_cat/In2]
 connect_bd_net [get_bd_pins status2_cat/dout] [get_bd_pins status_gpio/gpio2_io_i]
@@ -248,18 +308,43 @@ connect_bd_net [get_bd_pins dvi_rx/aPixelClkLckd] [get_bd_pins status_cat/In0]
 connect_bd_net [get_bd_pins blrx/overflow] [get_bd_pins status_cat/In1]
 connect_bd_net [get_bd_pins probe/status] [get_bd_pins status_cat/In2]
 connect_bd_net [get_bd_pins hdr_cat/dout] [get_bd_pins status_cat/In3]
+
+# --- WHICH frame, and WHICH camera. Both status words are full to the
+# bit, and these do not belong crammed into a spare corner anyway: they
+# are the stream's identity. Software reads them to recognise a source
+# and load ITS calibration, and to tell a frame the link LOST from one
+# the camera never sent.
+#
+# OBSERVABILITY, not correlation. This reports the LAST ACCEPTED
+# header -- the frame ENTERING the pipeline. By the time a frame's
+# statistics are ready the next header has landed and this has moved
+# on, so statistics must carry their OWN frame id, latched with the
+# accumulators in one snapshot. Reading this beside a separate stats
+# register is a race with a one-frame error, which is what makes an
+# exposure loop oscillate.
+set hgpio [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio hdr_gpio]
+set_property -dict [list CONFIG.C_GPIO_WIDTH {32} CONFIG.C_ALL_INPUTS {1} \
+    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {8} \
+    CONFIG.C_ALL_INPUTS_2 {1}] $hgpio
+connect_bd_net [get_bd_pins blrx/hdr_frame_seq] [get_bd_pins hdr_gpio/gpio_io_i]
+connect_bd_net [get_bd_pins blrx/hdr_source_id] [get_bd_pins hdr_gpio/gpio2_io_i]
 connect_bd_net [get_bd_pins status_cat/dout] [get_bd_pins status_gpio/gpio_io_i]
 
 # --- automation for AXI plumbing, resets, address map
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
     [get_bd_intf_pins vdma/S_AXI_LITE]
+if {$capture} {
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
     [get_bd_intf_pins dma/S_AXI_LITE]
+}
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
     [get_bd_intf_pins status_gpio/S_AXI]
+apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
+    {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
+    [get_bd_intf_pins hdr_gpio/S_AXI]
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
     [get_bd_intf_pins ctrl_gpio/S_AXI]
@@ -290,17 +375,24 @@ apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
 # The scanout read does NOT: 1080p60 is 594 MB/s sustained, and one
 # 800 MB/s HP port carrying that plus the ISP's write loses on plain
 # arithmetic. The read side gets a port of its own (HP1, below).
-set_property CONFIG.NUM_SI {2} [get_bd_cells axi_mem_intercon]
+# Two masters write DDR when capture is in: the framebuffer and the
+# capture DMA. Without it the framebuffer is alone and the second
+# slave port is not created at all.
+if {$capture} {
+    set_property CONFIG.NUM_SI {2} [get_bd_cells axi_mem_intercon]
+}
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/vdma/M_AXI_MM2S} \
      Slave {/ps7/S_AXI_HP1} ddr_seg {Auto} intc_ip {New AXI Interconnect} master_apm {0}} \
     [get_bd_intf_pins ps7/S_AXI_HP1]
+if {$capture} {
 connect_bd_intf_net [get_bd_intf_pins dma/M_AXI_S2MM] \
     [get_bd_intf_pins axi_mem_intercon/S01_AXI]
 connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins axi_mem_intercon/S01_ACLK]
 connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins dma/m_axi_s2mm_aclk]
 connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins axi_mem_intercon/S00_ARESETN]] \
     [get_bd_pins axi_mem_intercon/S01_ARESETN]
+}
 # Stream-side clocks the automation does not own: everything AXI in
 # this design lives on FCLK0, so the crossings are exactly the two
 # declared ones (TMDS pixel clock in, FCLK0 out).
