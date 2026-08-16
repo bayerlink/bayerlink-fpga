@@ -91,9 +91,18 @@ def main() -> int:
     ctrl.write(0, 0x2)
     time.sleep(0.1)
 
+    hgpio = MMIO(overlay.ip_dict["hdr_gpio"]["phys_addr"], 0x1000)
+
     def report(tag):
         s1 = gpio.read(0)
         s2 = gpio.read(0x8)
+        # The stream's identity and the link's health, one word:
+        # {loss[7:0], up, resyncs[7:0], source[7:0]}. Counts, not flags,
+        # so a poll that misses an event still sees that it happened.
+        seq = hgpio.read(0)
+        idw = hgpio.read(0x8)
+        src, resyncs = idw & 0xFF, (idw >> 8) & 0xFF
+        up, losses = (idw >> 16) & 1, (idw >> 17) & 0xFF
         hdr = s1 >> 18
         # scanout's status word: sof-per-frame[2:0], locked, armed,
         # underflow, misalign, refused. Exactly one start-of-frame beat
@@ -105,7 +114,9 @@ def main() -> int:
               f"armed={(sc >> 4) & 1} under={(sc >> 5) & 1} "
               f"misalign={(sc >> 6) & 1} win_refused={(sc >> 7) & 1} "
               f"sof/frame={sc & 7} | "
-              f"s2mm_sr={vdma.read(0x34):#x} mm2s_sr={vdma.read(0x04):#x}")
+              f"s2mm_sr={vdma.read(0x34):#x} mm2s_sr={vdma.read(0x04):#x} | "
+              f"src={src} frame={seq} link={'up' if up else 'DOWN'} "
+              f"drops={losses} resyncs={resyncs}")
 
     report("up")
     t0 = time.time()

@@ -11,7 +11,7 @@ set_property ip_repo_paths [file join $root vivado-library] [current_project]
 update_ip_catalog
 
 add_files [file join $root hdl generated scanout.v] \
-    [file join $root hdl stream_switch.v] [file join $root hdl axis_unpack.v] \
+    [file join $root hdl link_reset.v] [file join $root hdl stream_switch.v] [file join $root hdl axis_unpack.v] \
     [file join $root hdl isp_axis.v] [file join $root hdl generated revela_isp.v] \
     [file join $root hdl generated bayerlink_rx.v] \
     [file join $root hdl rx_axis.v] [file join $root hdl vid_probe.v] \
@@ -244,6 +244,21 @@ set brm [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice broom]
 set_property -dict [list CONFIG.DIN_WIDTH {2} CONFIG.DIN_FROM {0} \
     CONFIG.DIN_TO {0}] $brm
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins broom/Din]
+
+# The pixel domain's reset comes from the LINK, not from a person.
+# That domain runs on the clock recovered from the cable, so an unplug
+# stops it: FIFOs freeze half full, the ISP mid-line, the writer mid
+# frame. Nothing in there can notice, which is why a replug used to
+# need a register poke. The supervisor runs on FCLK0, which cannot
+# stop, asserts asynchronously so it lands with no pixel clock at all,
+# and releases synchronously so the domain leaves reset on an edge.
+# Power-up needs no special case: no lock, so the domain is held until
+# a source appears. The broom still overrides, for a stuck sticky bit.
+set lrst [create_bd_cell -type module -reference link_reset link_rst]
+connect_bd_net [get_bd_pins ps7/FCLK_CLK0]      [get_bd_pins link_rst/stable_clk]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk]    [get_bd_pins link_rst/pix_clk]
+connect_bd_net [get_bd_pins dvi_rx/aPixelClkLckd] [get_bd_pins link_rst/locked_a]
+connect_bd_net [get_bd_pins broom/Dout]         [get_bd_pins link_rst/soft_rst]
 # Bit 1 chooses the stream's consumer, which is only a choice when
 # there are two of them. Without capture the ISP is the only consumer
 # and the bit means nothing, so the slice is not built; bit 0, the
@@ -255,19 +270,19 @@ if {$capture} {
     connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins isp_sel/Din]
     connect_bd_net [get_bd_pins isp_sel/Dout] [get_bd_pins sw/sel]
 }
-connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins shim_isp/rst]
-connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins unpack_isp/rst]
-connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins isp/rst]
-connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins isp_out/rst]
-connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins blrx/rst]
+connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins shim_isp/rst]
+connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins unpack_isp/rst]
+connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins isp/rst]
+connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins isp_out/rst]
+connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins blrx/rst]
 if {$capture} {
-    catch {connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins shim/rst]}
+    catch {connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins shim/rst]}
 }
 
 # --- status: lock + overflow + the probe's testimony
 set probe [create_bd_cell -type module -reference vid_probe probe]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins probe/clk]
-connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins probe/rst]
+connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins probe/rst]
 connect_bd_net [get_bd_pins dvi_rx/vid_pVDE] [get_bd_pins probe/de]
 connect_bd_net [get_bd_pins dvi_rx/vid_pVSync] [get_bd_pins probe/vsync]
 connect_bd_net [get_bd_pins dvi_rx/vid_pData] [get_bd_pins probe/data]
@@ -324,10 +339,22 @@ connect_bd_net [get_bd_pins hdr_cat/dout] [get_bd_pins status_cat/In3]
 # exposure loop oscillate.
 set hgpio [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio hdr_gpio]
 set_property -dict [list CONFIG.C_GPIO_WIDTH {32} CONFIG.C_ALL_INPUTS {1} \
-    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {8} \
+    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {32} \
     CONFIG.C_ALL_INPUTS_2 {1}] $hgpio
 connect_bd_net [get_bd_pins blrx/hdr_frame_seq] [get_bd_pins hdr_gpio/gpio_io_i]
-connect_bd_net [get_bd_pins blrx/hdr_source_id] [get_bd_pins hdr_gpio/gpio2_io_i]
+# Channel 2 is the stream's identity plus the link's own testimony:
+# {loss_count[7:0], link_up, resync_count[7:0], source_id[7:0]}.
+# A host polls this one word and knows what is connected, whether the
+# cable has dropped since it last looked, and whether the stream
+# restarted -- all as COUNTS, so a poll that misses an event still
+# sees that it happened.
+set icat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat ident_cat]
+set_property CONFIG.NUM_PORTS {4} $icat
+connect_bd_net [get_bd_pins blrx/hdr_source_id]  [get_bd_pins ident_cat/In0]
+connect_bd_net [get_bd_pins blrx/resync_count]   [get_bd_pins ident_cat/In1]
+connect_bd_net [get_bd_pins link_rst/link_up]    [get_bd_pins ident_cat/In2]
+connect_bd_net [get_bd_pins link_rst/loss_count] [get_bd_pins ident_cat/In3]
+connect_bd_net [get_bd_pins ident_cat/dout] [get_bd_pins hdr_gpio/gpio2_io_i]
 connect_bd_net [get_bd_pins status_cat/dout] [get_bd_pins status_gpio/gpio_io_i]
 
 # --- automation for AXI plumbing, resets, address map
@@ -411,11 +438,18 @@ set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] $inv
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins rstn_pix/Op1]
 # An async-FIFO crossing initializes only when BOTH sides reset while
 # BOTH clocks run. At boot the pixel clock does not exist, so boot-time
-# resets can never do it -- the software reset owns every reset pin of
-# the receive path, and one pulse with the link up brings it all to a
-# known state: converter (both sides), video-in (both sides), receiver.
+# resets can never do it. The RECEIVE path no longer depends on anyone
+# noticing: link_rst holds it until lock settles, which is by
+# definition a moment when both clocks run. This converter belongs to
+# the capture branch and keeps the broom, which is honest -- it is a
+# bring-up path, and it is brought up by hand.
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/s_axis_aresetn]
 connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
+# The display deliberately does NOT follow the link. The scanout runs
+# on this board's own 148.5 MHz, and a TV that loses sync every time a
+# camera is unplugged is worse than one showing a stale frame: the
+# picture path is the board's, the source is the cable's. So the broom,
+# not link_rst.
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins scanout/rst]
 # The prover's reset recipe, kept verbatim: rgb2dvi held in reset by
 # nothing but the pixel MMCM's own lock.
