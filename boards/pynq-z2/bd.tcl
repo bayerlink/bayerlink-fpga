@@ -11,7 +11,7 @@ set_property ip_repo_paths [file join $root vivado-library] [current_project]
 update_ip_catalog
 
 add_files [file join $root hdl generated scanout.v] \
-    [file join $root hdl link_reset.v] [file join $root hdl stream_switch.v] [file join $root hdl axis_unpack.v] \
+    [file join $root hdl generated fbread.v] [file join $root hdl link_reset.v] [file join $root hdl stream_switch.v] [file join $root hdl axis_unpack.v] \
     [file join $root hdl isp_axis.v] [file join $root hdl generated revela_isp.v] \
     [file join $root hdl generated bayerlink_rx.v] \
     [file join $root hdl rx_axis.v] [file join $root hdl vid_probe.v] \
@@ -122,16 +122,12 @@ if {$capture} {
 # buffers THROUGH A REGISTER: block RAM instead of a distributed-RAM
 # select tree that deepens with the line. The island is retired and
 # the ISP rides the receiver's own clock again, at any width.
-set shimb [create_bd_cell -type module -reference rx_axis shim_isp]
-set_property CONFIG.SAMPLE_BITS $sample_bits $shimb
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins shim_isp/clk]
-foreach s {valid ready data sof eol last} {
-    connect_bd_net [get_bd_pins ${isp_src}_$s] [get_bd_pins shim_isp/in_$s]
-}
-set unp [create_bd_cell -type module -reference axis_unpack unpack_isp]
-set_property CONFIG.SAMPLE_BITS $sample_bits $unp
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins unpack_isp/clk]
-connect_bd_intf_net [get_bd_intf_pins shim_isp/m_axis] [get_bd_intf_pins unpack_isp/s_axis]
+# The ISP reads the stream DIRECTLY. Until the island retired, this
+# branch went out to AXI-Stream and straight back through a pair whose
+# only purpose was to sit either side of a clock converter -- and once
+# the ISP came back onto the receiver's own clock there was no
+# converter left between them, so the pair was an elastic stream
+# turned into AXI and turned back, on one clock, for nothing.
 set isp [create_bd_cell -type module -reference revela_isp isp]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp/clk]
 # The stream's own facts drive the pipeline context: header to ctx,
@@ -142,7 +138,7 @@ foreach f {width height phase bits} {
     connect_bd_net [get_bd_pins blrx/hdr_$f] [get_bd_pins isp/hdr_$f]
 }
 foreach s {valid ready data sof eol last} {
-    connect_bd_net [get_bd_pins unpack_isp/out_$s] [get_bd_pins isp/in_$s]
+    connect_bd_net [get_bd_pins ${isp_src}_$s] [get_bd_pins isp/in_$s]
 }
 set iax [create_bd_cell -type module -reference isp_axis isp_out]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp_out/clk]
@@ -214,14 +210,39 @@ set_property name hdmi_tx [get_bd_intf_ports TMDS_0]
 # FREE-RUN, explicitly: propagation once slipped in use_fsync=1 and
 # genlock-slave -- a scheduler waiting forever on a sync and a frame
 # pointer that nothing drives. Running-while-starving, no error bit.
-set_property -dict [list CONFIG.c_include_mm2s {1} \
-    CONFIG.c_mm2s_linebuffer_depth {4096} \
+# The VDMA keeps the WRITE side and loses the read side. Its read side
+# fetched the frame back perfectly well while making one thing
+# impossible: knowing when its first beat arrived relative to the
+# raster's first pixel. That offset landed somewhere new on every lock
+# -- 0, 16, 48 and 80 were all measured here from reloads of an
+# unchanged bitstream -- and `--skew` corrected it by hand. Survivable
+# while a person reloaded anyway; not survivable once the link recovers
+# by itself, because every replug re-locks and re-rolls it.
+set_property -dict [list CONFIG.c_include_mm2s {0} \
     CONFIG.c_use_fsync {0} \
-    CONFIG.c_mm2s_genlock_mode {0} \
     CONFIG.c_s2mm_genlock_mode {0}] $vdma
-connect_bd_intf_net [get_bd_intf_pins vdma/M_AXIS_MM2S] [get_bd_intf_pins scanout/s_axis]
-connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vdma/m_axis_mm2s_aclk]
-# m_axi_mm2s_aclk is wired by the HP1 automation below.
+
+# fbread owns its addressing, so its first beat IS the frame's first
+# pixel and it says so on tuser. Nothing to measure, nothing to correct.
+# It runs on the DISPLAY's clock, beside the raster it feeds, and its
+# geometry is the display's -- fixed by the mode. Only the base address
+# is run-time, because only Linux knows where it put the buffer.
+set fbr [create_bd_cell -type module -reference fbread fbread]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins fbread/clk]
+connect_bd_intf_net [get_bd_intf_pins fbread/m_axis] [get_bd_intf_pins scanout/s_axis]
+
+set fbgeom [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant fb_lbeats]
+set_property -dict [list CONFIG.CONST_WIDTH {16} \
+    CONFIG.CONST_VAL {1920}] $fbgeom
+connect_bd_net [get_bd_pins fb_lbeats/dout] [get_bd_pins fbread/line_beats]
+set fblines [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant fb_lines]
+set_property -dict [list CONFIG.CONST_WIDTH {16} \
+    CONFIG.CONST_VAL {1080}] $fblines
+connect_bd_net [get_bd_pins fb_lines/dout] [get_bd_pins fbread/lines]
+set fbstride [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant fb_stride]
+set_property -dict [list CONFIG.CONST_WIDTH {32} \
+    CONFIG.CONST_VAL {7680}] $fbstride
+connect_bd_net [get_bd_pins fb_stride/dout] [get_bd_pins fbread/stride_bytes]
 
 # --- interrupts: the pynq drivers refuse to exist without them
 set irqcat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat irq_cat]
@@ -238,12 +259,30 @@ connect_bd_net [get_bd_pins irq_cat/dout] [get_bd_pins ps7/IRQ_F2P]
 
 # --- software reset for the receiver: a sticky overflow needs a broom
 set ctrl [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio ctrl_gpio]
-set_property -dict [list CONFIG.C_GPIO_WIDTH {2} CONFIG.C_ALL_OUTPUTS {1}] $ctrl
+# Channel 2 carries the framebuffer's base address. Only Linux knows
+# where it allocated the buffer, so that one number has to come from
+# software; everything else about the fetch is the display's geometry
+# and is fixed at build. `enable` follows from the address being set, so
+# there is no separate go bit to forget.
+set_property -dict [list CONFIG.C_GPIO_WIDTH {3} CONFIG.C_ALL_OUTPUTS {1} \
+    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {32} \
+    CONFIG.C_ALL_OUTPUTS_2 {1}] $ctrl
 # Bit 0 is the broom, bit 1 selects the stream's consumer (judge/ISP).
 set brm [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice broom]
-set_property -dict [list CONFIG.DIN_WIDTH {2} CONFIG.DIN_FROM {0} \
+set_property -dict [list CONFIG.DIN_WIDTH {3} CONFIG.DIN_FROM {0} \
     CONFIG.DIN_TO {0}] $brm
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins broom/Din]
+connect_bd_net [get_bd_pins ctrl_gpio/gpio2_io_o] [get_bd_pins fbread/base_addr]
+# Bit 2 enables the fetch, and is written AFTER the address. Derived
+# from the address instead, it would rise while those 32 bits were
+# still crossing into the display clock -- half the old address, half
+# the new, and an engine pointed at neither. Write, then enable, is
+# the handshake; fbread synchronises this bit on its side.
+set fbsel [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice fb_en]
+set_property -dict [list CONFIG.DIN_WIDTH {3} CONFIG.DIN_FROM {2} \
+    CONFIG.DIN_TO {2}] $fbsel
+connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins fb_en/Din]
+connect_bd_net [get_bd_pins fb_en/Dout] [get_bd_pins fbread/enable]
 
 # The pixel domain's reset comes from the LINK, not from a person.
 # That domain runs on the clock recovered from the cable, so an unplug
@@ -265,16 +304,18 @@ connect_bd_net [get_bd_pins broom/Dout]         [get_bd_pins link_rst/soft_rst]
 # broom, is unaffected and keeps its meaning either way.
 if {$capture} {
     set msel [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice isp_sel]
-    set_property -dict [list CONFIG.DIN_WIDTH {2} CONFIG.DIN_FROM {1} \
+    set_property -dict [list CONFIG.DIN_WIDTH {3} CONFIG.DIN_FROM {1} \
         CONFIG.DIN_TO {1}] $msel
     connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins isp_sel/Din]
     connect_bd_net [get_bd_pins isp_sel/Dout] [get_bd_pins sw/sel]
 }
-connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins shim_isp/rst]
-connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins unpack_isp/rst]
 connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins isp/rst]
 connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins isp_out/rst]
 connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins blrx/rst]
+# The tallies clear on a deliberate ask, not on every cable drop: rst
+# now arrives from the LINK, and a counter reset by the event it counts
+# tells you nothing. The broom is a person saying "start again".
+connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins blrx/diag_clear]
 if {$capture} {
     catch {connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins shim/rst]}
 }
@@ -338,8 +379,11 @@ connect_bd_net [get_bd_pins hdr_cat/dout] [get_bd_pins status_cat/In3]
 # register is a race with a one-frame error, which is what makes an
 # exposure loop oscillate.
 set hgpio [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio hdr_gpio]
+# Channel 2 is exactly as wide as the facts it carries -- 8 + 8 + 1 + 8.
+# A wider channel would leave its top bits unconnected, which Vivado
+# reports and which reads back as whatever the fabric felt like.
 set_property -dict [list CONFIG.C_GPIO_WIDTH {32} CONFIG.C_ALL_INPUTS {1} \
-    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {32} \
+    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {25} \
     CONFIG.C_ALL_INPUTS_2 {1}] $hgpio
 connect_bd_net [get_bd_pins blrx/hdr_frame_seq] [get_bd_pins hdr_gpio/gpio_io_i]
 # Channel 2 is the stream's identity plus the link's own testimony:
@@ -408,8 +452,14 @@ apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
 if {$capture} {
     set_property CONFIG.NUM_SI {2} [get_bd_cells axi_mem_intercon]
 }
+# HP1 now carries fbread instead of the VDMA's read side. Same traffic,
+# same port, same reason for it having a port of its own -- only the
+# master changed, and with it the guarantee about WHEN its first beat
+# lands. It runs on the display clock, so the crossing into the PS
+# happens in this interconnect rather than inside a vendor core where
+# it could not be reasoned about.
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
-    {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/vdma/M_AXI_MM2S} \
+    {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/fbread/m_axi} \
      Slave {/ps7/S_AXI_HP1} ddr_seg {Auto} intc_ip {New AXI Interconnect} master_apm {0}} \
     [get_bd_intf_pins ps7/S_AXI_HP1]
 if {$capture} {
@@ -451,6 +501,12 @@ connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
 # picture path is the board's, the source is the cable's. So the broom,
 # not link_rst.
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins scanout/rst]
+# fbread's reset is NOT connected here. Its port declares
+# ASSOCIATED_RESET, so the AXI automation gives it the interconnect's
+# own peripheral reset -- which is the right source for a bus master:
+# a broom pulse landing mid-burst would leave the interconnect holding
+# a transaction nobody will finish. It is stopped instead by taking its
+# base address away, which is also how it is started.
 # The prover's reset recipe, kept verbatim: rgb2dvi held in reset by
 # nothing but the pixel MMCM's own lock.
 set lockinv [create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic lock_inv]

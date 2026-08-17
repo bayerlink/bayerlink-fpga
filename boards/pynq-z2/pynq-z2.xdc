@@ -26,6 +26,34 @@ create_clock -period 6.734 -name tmds_clk [get_ports TMDS_clk_p]
 ## frame. False-path it wholesale rather than per destination clock.
 set_false_path -from [get_cells -hier -filter {NAME =~ */ctrl_gpio/*gpio_Data_Out_reg*}]
 
+## The framebuffer's base address, and the enable beside it. Software
+## writes the address, then enables, and the address does not move again
+## while the engine runs -- so this crossing is quasi-static by
+## contract, and the contract is what makes it safe rather than the
+## timing. Left timed it fails by 4.3ns against a 148.5MHz raster, for a
+## value that changes once a session.
+set_false_path -from [get_cells -hier -filter {NAME =~ */ctrl_gpio/*gpio2_Data_Out_reg*}]
+
+## link_reset: two paths here are asynchronous BY CONSTRUCTION, and
+## timing them is not a conservative choice, it is a meaningless one.
+##
+## 1. The lock signal. dvi2rgb's `aLocked` is named for what it is --
+##    asynchronous -- and lk0/lk1 are the synchroniser that makes it
+##    usable. Timing the launch into lk0 asks the tool to guarantee a
+##    relationship the design explicitly does not rely on.
+##
+## 2. The reset's ASSERTION. `arst` drives the asynchronous preset of
+##    the r0/r1 pair, and asserting with no pixel clock at all is the
+##    entire reason this module exists -- an unplug takes the clock
+##    away. Its DEASSERTION is synchronous, through those same two
+##    flops, and that path stays timed, which is the half that matters.
+##
+## Left timed and this fails by 3.2ns on a route the tool has no
+## reason to keep short, since nothing depends on its length.
+set_false_path -to [get_pins -hier -filter {NAME =~ *link_rst*/lk0_reg*/D}]
+set_false_path -to [get_pins -hier -filter {NAME =~ *link_rst*/r0_reg*/PRE}]
+set_false_path -to [get_pins -hier -filter {NAME =~ *link_rst*/r1_reg*/PRE}]
+
 ## HDMI TX -- the display side (TUL master XDC v1.0 pin facts)
 set_property -dict { PACKAGE_PIN L16 IOSTANDARD TMDS_33 } [get_ports hdmi_tx_clk_p]
 set_property -dict { PACKAGE_PIN L17 IOSTANDARD TMDS_33 } [get_ports hdmi_tx_clk_n]

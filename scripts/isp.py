@@ -24,12 +24,9 @@ ISP_W, ISP_H = 1920, 1080   # the TV's best defines the sensor's ask
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bit", default="rx.bit")
-    parser.add_argument("--skew", type=int, default=352,
-                        help="pixels to advance the scanout read by, to "
-                             "cancel the read engine's own marker-to-data "
-                             "lag. MEASURED per bitstream with scripts/"
-                             "ruler.py and a capture card; must stay a "
-                             "multiple of 16 (64-byte aligned)")
+    parser.add_argument("--interval", type=float, default=10.0,
+                        help="heartbeat seconds; changes print immediately "
+                             "regardless, so a swap is never missed")
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="status loop duration; 0 = forever")
     args = parser.parse_args()
@@ -51,26 +48,21 @@ def main() -> int:
         print("no receiver activity: is the source streaming?")
         return 2
 
-    # One spare line: the scanout starts `skew` pixels in, so its last
-    # line reads that far past the picture. Better to own those bytes
-    # than to read whatever follows the buffer.
+    # One spare line, kept although the reason for it is gone. It
+    # existed because the read started `skew` pixels in and ran that far
+    # past the picture; fbread starts exactly at the first pixel and
+    # reads exactly MODE_H lines. A line of DDR is a cheap guard against
+    # an off-by-one in a fetch engine reading someone else's pages.
     fb = allocate(shape=(MODE_H + 1, MODE_W, 4), dtype="u1")
     fb[:] = 16
     fb.flush()
 
-    # Read side: the raster scans the whole frame, forever.
-    # The read engine's data lags its own start-of-frame marker by a
-    # fixed number of beats -- proven by a self-test raster, which
-    # paints from its own counters and lands pixel-perfect, while the
-    # same design fed from memory is displaced. So start the read that
-    # far in. The number is MEASURED per bitstream (ruler.py + capture
-    # card); it goes away when scanout owns its own framebuffer reader.
-    vdma.write(0x00, 0x3)
-    for n in range(3):
-        vdma.write(0x5C + 4 * n, fb.physical_address + args.skew * 4)
-    vdma.write(0x58, MODE_W * 4)
-    vdma.write(0x54, MODE_W * 4)
-    vdma.write(0x50, MODE_H)
+    # Read side: one number. fbread owns its addressing, so its first
+    # beat IS the frame's first pixel -- there is no offset to measure
+    # and no --skew to carry. Geometry is the display's and is fixed in
+    # the bitstream; only WHERE Linux put the buffer can be known here.
+    # Writing the address is also what enables the engine.
+    ctrl.write(0x8, fb.physical_address)
 
     # Write side: the ISP lands its window centred, forever.
     x0 = (MODE_W - ISP_W) // 2
@@ -89,9 +81,20 @@ def main() -> int:
     ctrl.write(0, 0x3)
     time.sleep(0.05)
     ctrl.write(0, 0x2)
+    # ADDRESS FIRST, THEN ENABLE, and not the other way round: those 32
+    # bits cross into the display clock without a synchroniser because
+    # they are still by the time they matter, and enable rising is what
+    # says they are. Bit 2 alongside the consumer select.
+    time.sleep(0.01)
+    ctrl.write(0, 0x6)
     time.sleep(0.1)
 
     hgpio = MMIO(overlay.ip_dict["hdr_gpio"]["phys_addr"], 0x1000)
+
+    def identity():
+        """(source, resyncs, link up, drops) -- the one word a swap moves."""
+        w = hgpio.read(0x8)
+        return (w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 1, (w >> 17) & 0xFF)
 
     def report(tag):
         s1 = gpio.read(0)
@@ -120,10 +123,25 @@ def main() -> int:
 
     report("up")
     t0 = time.time()
+    # Poll the identity word FAST and print when it moves. A hot swap is
+    # over in well under a second: on a ten-second heartbeat the unplug,
+    # the recovery and the new sensor all land in one line, which is the
+    # same as not seeing them.
+    last = identity()
+    beat = t0
     try:
         while args.seconds <= 0 or time.time() - t0 < args.seconds:
-            time.sleep(10)
-            report(f"t+{time.time() - t0:4.0f}s")
+            time.sleep(0.05)
+            now = identity()
+            if now != last:
+                src, res, up, drops = now
+                report(f"t+{time.time() - t0:4.0f}s CHANGE "
+                       f"link={'up' if up else 'DOWN'} src={src} "
+                       f"drops={drops} resyncs={res}")
+                last = now
+            if time.time() - beat >= args.interval:
+                beat = time.time()
+                report(f"t+{time.time() - t0:4.0f}s")
     except KeyboardInterrupt:
         pass
     finally:
@@ -133,6 +151,13 @@ def main() -> int:
         # page cache included, which is how an SD card's rootfs rots.
         # The read side may keep scanning out; reads hurt nobody.
         vdma.write(0x30, 0x0)
+        # And stop the READ engine the same way it was started: with no
+        # base address there is nothing to fetch. It must not outlive
+        # this process either -- the pages go back to the kernel when
+        # the buffer is freed, and a master still reading them is a
+        # master reading whatever they become next.
+        ctrl.write(0, ctrl.read(0) & ~0x4)   # stop fetching
+        ctrl.write(0x8, 0)
         time.sleep(0.05)
     return 0
 
