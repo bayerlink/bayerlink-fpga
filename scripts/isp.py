@@ -24,6 +24,21 @@ ISP_W, ISP_H = 1920, 1080   # the TV's best defines the sensor's ask
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bit", default="rx.bit")
+    parser.add_argument("--reader", choices=("vdma", "fbread"), default="vdma",
+                        help="which engine feeds the display, matching the "
+                             "bitstream. vdma is the one that works; fbread "
+                             "is right in simulation and does not yet fetch "
+                             "a byte on this board")
+    parser.add_argument("--skew", type=int, default=0,
+                        help="vdma only: the read engine's data lags its own "
+                             "start-of-frame by a number of beats that is "
+                             "MEASURED, not derived -- it lands somewhere new "
+                             "on every lock. 0 is this bitstream's, checked "
+                             "on a screen 2026-08-17; the previous build "
+                             "wanted 352, and the same design has wanted 16, "
+                             "48 and 80. If the picture is displaced, this is "
+                             "the number, and scripts/skew.py moves it live. "
+                             "fbread exists to make it not exist")
     parser.add_argument("--interval", type=float, default=10.0,
                         help="heartbeat seconds; changes print immediately "
                              "regardless, so a swap is never missed")
@@ -57,12 +72,22 @@ def main() -> int:
     fb[:] = 16
     fb.flush()
 
-    # Read side: one number. fbread owns its addressing, so its first
-    # beat IS the frame's first pixel -- there is no offset to measure
-    # and no --skew to carry. Geometry is the display's and is fixed in
-    # the bitstream; only WHERE Linux put the buffer can be known here.
-    # Writing the address is also what enables the engine.
-    ctrl.write(0x8, fb.physical_address)
+    # Read side, one way or the other.
+    if args.reader == "fbread":
+        # fbread owns its addressing, so its first beat IS the frame's
+        # first pixel: no offset to measure, no --skew to carry. Only
+        # WHERE Linux put the buffer can be known here.
+        ctrl.write(0x8, fb.physical_address)
+    else:
+        # The VDMA's data lags its own start-of-frame marker by a number
+        # that lands somewhere new on every lock. Start the read that far
+        # in. Measured per bitstream with ruler.py and a capture card.
+        vdma.write(0x00, 0x3)
+        for n in range(3):
+            vdma.write(0x5C + 4 * n, fb.physical_address + args.skew * 4)
+        vdma.write(0x58, MODE_W * 4)
+        vdma.write(0x54, MODE_W * 4)
+        vdma.write(0x50, MODE_H)
 
     # Write side: the ISP lands its window centred, forever.
     x0 = (MODE_W - ISP_W) // 2
@@ -85,8 +110,12 @@ def main() -> int:
     # bits cross into the display clock without a synchroniser because
     # they are still by the time they matter, and enable rising is what
     # says they are. Bit 2 alongside the consumer select.
-    time.sleep(0.01)
-    ctrl.write(0, 0x6)
+    if args.reader == "fbread":
+        # ADDRESS FIRST, THEN ENABLE: those 32 bits cross into the
+        # display clock without a synchroniser because they are still by
+        # the time they matter, and enable rising says they are.
+        time.sleep(0.01)
+        ctrl.write(0, 0x6)
     time.sleep(0.1)
 
     hgpio = MMIO(overlay.ip_dict["hdr_gpio"]["phys_addr"], 0x1000)
@@ -106,6 +135,8 @@ def main() -> int:
         idw = hgpio.read(0x8)
         src, resyncs = idw & 0xFF, (idw >> 8) & 0xFF
         up, losses = (idw >> 16) & 1, (idw >> 17) & 0xFF
+        fb_under, fb_err = (idw >> 25) & 1, (idw >> 26) & 1
+        dbg = (idw >> 27) & 0x1F   # run,en,arvalid,started,under
         hdr = s1 >> 18
         # scanout's status word: sof-per-frame[2:0], locked, armed,
         # underflow, misalign, refused. Exactly one start-of-frame beat
@@ -119,7 +150,10 @@ def main() -> int:
               f"sof/frame={sc & 7} | "
               f"s2mm_sr={vdma.read(0x34):#x} mm2s_sr={vdma.read(0x04):#x} | "
               f"src={src} frame={seq} link={'up' if up else 'DOWN'} "
-              f"drops={losses} resyncs={resyncs}")
+              f"drops={losses} resyncs={resyncs} "
+              f"fb_under={fb_under} fb_err={fb_err} "
+              f"fb[run={dbg & 1} en={(dbg >> 1) & 1} "
+              f"arvalid={(dbg >> 2) & 1} started={(dbg >> 3) & 1}]")
 
     report("up")
     t0 = time.time()
@@ -156,8 +190,9 @@ def main() -> int:
         # this process either -- the pages go back to the kernel when
         # the buffer is freed, and a master still reading them is a
         # master reading whatever they become next.
-        ctrl.write(0, ctrl.read(0) & ~0x4)   # stop fetching
-        ctrl.write(0x8, 0)
+        if args.reader == "fbread":
+            ctrl.write(0, ctrl.read(0) & ~0x4)   # stop fetching
+            ctrl.write(0x8, 0)
         time.sleep(0.05)
     return 0
 

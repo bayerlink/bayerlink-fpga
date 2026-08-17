@@ -46,6 +46,10 @@ def main() -> None:
     from np2hw.video_mem import framebuffer_read
 
     result = framebuffer_read(data_bits=32, addr_bits=32,
+                              # the display clock, stated so the block
+                              # design can size its crossing rather than
+                              # decide blind
+                              clk_hz=148_500_000,
                               burst_len=args.burst, fifo_depth=args.fifo,
                               module_name="fbread")
     out = HERE / "hdl" / "generated"

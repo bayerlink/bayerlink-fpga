@@ -88,6 +88,13 @@ set sample_bits [expr {[info exists ::env(BITS)] ? $::env(BITS) : 10}]
 # port); whether this build DOES is build.sh's. build.sh resolves the
 # two and exports the answer.
 set capture [expr {[info exists ::env(CAPTURE)] ? $::env(CAPTURE) : 1}]
+# WHICH read engine feeds the display. 0 is the VDMA, which works and has
+# always worked; 1 is fbread, which is right in simulation and does not
+# yet fetch a byte on this board. The default is the one that puts a
+# picture on a screen. A new engine does not get to be the only engine
+# until it has been one that works.
+set fbread_en [expr {[info exists ::env(FBREAD)] ? $::env(FBREAD) : 0}]
+puts "bd.tcl: display reader = [expr {$fbread_en ? {fbread} : {vdma}}]"
 puts "bd.tcl: sample width $sample_bits bits, capture path $capture"
 set rx [create_bd_cell -type module -reference bayerlink_rx blrx]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins blrx/clk]
@@ -218,10 +225,23 @@ set_property name hdmi_tx [get_bd_intf_ports TMDS_0]
 # unchanged bitstream -- and `--skew` corrected it by hand. Survivable
 # while a person reloaded anyway; not survivable once the link recovers
 # by itself, because every replug re-locks and re-rolls it.
-set_property -dict [list CONFIG.c_include_mm2s {0} \
-    CONFIG.c_use_fsync {0} \
-    CONFIG.c_s2mm_genlock_mode {0}] $vdma
+if {$fbread_en} {
+    set_property -dict [list CONFIG.c_include_mm2s {0} \
+        CONFIG.c_use_fsync {0} \
+        CONFIG.c_s2mm_genlock_mode {0}] $vdma
+} else {
+    set_property -dict [list CONFIG.c_include_mm2s {1} \
+        CONFIG.c_mm2s_linebuffer_depth {4096} \
+        CONFIG.c_use_fsync {0} \
+        CONFIG.c_mm2s_genlock_mode {0} \
+        CONFIG.c_s2mm_genlock_mode {0}] $vdma
+    connect_bd_intf_net [get_bd_intf_pins vdma/M_AXIS_MM2S] \
+        [get_bd_intf_pins scanout/s_axis]
+    connect_bd_net [get_bd_pins clk_out/clk_out1] \
+        [get_bd_pins vdma/m_axis_mm2s_aclk]
+}
 
+if {$fbread_en} {
 # fbread owns its addressing, so its first beat IS the frame's first
 # pixel and it says so on tuser. Nothing to measure, nothing to correct.
 # It runs on the DISPLAY's clock, beside the raster it feeds, and its
@@ -243,6 +263,7 @@ set fbstride [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant fb_stride]
 set_property -dict [list CONFIG.CONST_WIDTH {32} \
     CONFIG.CONST_VAL {7680}] $fbstride
 connect_bd_net [get_bd_pins fb_stride/dout] [get_bd_pins fbread/stride_bytes]
+}
 
 # --- interrupts: the pynq drivers refuse to exist without them
 set irqcat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat irq_cat]
@@ -272,6 +293,7 @@ set brm [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice broom]
 set_property -dict [list CONFIG.DIN_WIDTH {3} CONFIG.DIN_FROM {0} \
     CONFIG.DIN_TO {0}] $brm
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins broom/Din]
+if {$fbread_en} {
 connect_bd_net [get_bd_pins ctrl_gpio/gpio2_io_o] [get_bd_pins fbread/base_addr]
 # Bit 2 enables the fetch, and is written AFTER the address. Derived
 # from the address instead, it would rise while those 32 bits were
@@ -283,6 +305,7 @@ set_property -dict [list CONFIG.DIN_WIDTH {3} CONFIG.DIN_FROM {2} \
     CONFIG.DIN_TO {2}] $fbsel
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins fb_en/Din]
 connect_bd_net [get_bd_pins fb_en/Dout] [get_bd_pins fbread/enable]
+}
 
 # The pixel domain's reset comes from the LINK, not from a person.
 # That domain runs on the clock recovered from the cable, so an unplug
@@ -383,21 +406,42 @@ set hgpio [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio hdr_gpio]
 # A wider channel would leave its top bits unconnected, which Vivado
 # reports and which reads back as whatever the fabric felt like.
 set_property -dict [list CONFIG.C_GPIO_WIDTH {32} CONFIG.C_ALL_INPUTS {1} \
-    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {25} \
+    CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {32} \
     CONFIG.C_ALL_INPUTS_2 {1}] $hgpio
 connect_bd_net [get_bd_pins blrx/hdr_frame_seq] [get_bd_pins hdr_gpio/gpio_io_i]
 # Channel 2 is the stream's identity plus the link's own testimony:
-# {loss_count[7:0], link_up, resync_count[7:0], source_id[7:0]}.
+# {fb_slverr, fb_underflow, loss_count[7:0], link_up,
+#  resync_count[7:0], source_id[7:0]}.
 # A host polls this one word and knows what is connected, whether the
 # cable has dropped since it last looked, and whether the stream
 # restarted -- all as COUNTS, so a poll that misses an event still
 # sees that it happened.
 set icat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat ident_cat]
-set_property CONFIG.NUM_PORTS {4} $icat
+set_property CONFIG.NUM_PORTS {7} $icat
 connect_bd_net [get_bd_pins blrx/hdr_source_id]  [get_bd_pins ident_cat/In0]
 connect_bd_net [get_bd_pins blrx/resync_count]   [get_bd_pins ident_cat/In1]
 connect_bd_net [get_bd_pins link_rst/link_up]    [get_bd_pins ident_cat/In2]
 connect_bd_net [get_bd_pins link_rst/loss_count] [get_bd_pins ident_cat/In3]
+if {$fbread_en} {
+    connect_bd_net [get_bd_pins fbread/underflow] [get_bd_pins ident_cat/In4]
+    connect_bd_net [get_bd_pins fbread/slverr]    [get_bd_pins ident_cat/In5]
+} else {
+    set fbz [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant fb_absent]
+    set_property -dict [list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {0}] $fbz
+    connect_bd_net [get_bd_pins fb_absent/dout] [get_bd_pins ident_cat/In4]
+    connect_bd_net [get_bd_pins fb_absent/dout] [get_bd_pins ident_cat/In5]
+}
+# WHY it is idle, if it is. Held in reset, never enabled, and asking a
+# bus that never answers are three different faults that look the same
+# from outside: no data and no error. Three builds went on telling them
+# apart by guessing.
+if {$fbread_en} {
+    connect_bd_net [get_bd_pins fbread/dbg] [get_bd_pins ident_cat/In6]
+} else {
+    set fbz8 [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant fb_dbg0]
+    set_property -dict [list CONFIG.CONST_WIDTH {8} CONFIG.CONST_VAL {0}] $fbz8
+    connect_bd_net [get_bd_pins fb_dbg0/dout] [get_bd_pins ident_cat/In6]
+}
 connect_bd_net [get_bd_pins ident_cat/dout] [get_bd_pins hdr_gpio/gpio2_io_i]
 connect_bd_net [get_bd_pins status_cat/dout] [get_bd_pins status_gpio/gpio_io_i]
 
@@ -458,10 +502,36 @@ if {$capture} {
 # lands. It runs on the display clock, so the crossing into the PS
 # happens in this interconnect rather than inside a vendor core where
 # it could not be reasoned about.
-apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
-    {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/fbread/m_axi} \
-     Slave {/ps7/S_AXI_HP1} ddr_seg {Auto} intc_ip {New AXI Interconnect} master_apm {0}} \
-    [get_bd_intf_pins ps7/S_AXI_HP1]
+# Whichever reader is in use takes HP1. Written out TWICE rather than
+# substituting the master into one call: Tcl does not substitute inside
+# braces, and the quoted form that would is not the list this option
+# wants. Two literal calls have neither problem.
+if {$fbread_en} {
+    apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
+        {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/fbread/m_axi} \
+         Slave {/ps7/S_AXI_HP1} ddr_seg {Auto} intc_ip {New AXI Interconnect} master_apm {0}} \
+        [get_bd_intf_pins ps7/S_AXI_HP1]
+} else {
+    apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
+        {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/vdma/M_AXI_MM2S} \
+         Slave {/ps7/S_AXI_HP1} ddr_seg {Auto} intc_ip {New AXI Interconnect} master_apm {0}} \
+        [get_bd_intf_pins ps7/S_AXI_HP1]
+}
+
+# The automation's reset generator for this clock has the MMCM's lock on
+# dcm_locked already -- checked in the .xci, not assumed. Its
+# ext_reset_in and aux_reset_in are left unconnected, which the block
+# design ties to 0, and whether 0 means "reset" depends on a polarity
+# nobody stated. State it: with both ACTIVE_HIGH, a tied-off 0 is
+# unambiguously "not asserted", and this generator releases after its
+# power-on sequence instead of possibly never.
+if {$fbread_en} {
+    # This reset generator only exists when fbread is the master: the
+    # automation makes one for the display clock domain, and with the
+    # VDMA driving HP1 there is no such domain to make it for.
+    set_property -dict [list CONFIG.C_EXT_RST_ACTIVE_HIGH {1} \
+        CONFIG.C_AUX_RST_ACTIVE_HIGH {1}] [get_bd_cells rst_clk_out_148M]
+}
 if {$capture} {
 connect_bd_intf_net [get_bd_intf_pins dma/M_AXI_S2MM] \
     [get_bd_intf_pins axi_mem_intercon/S01_AXI]
@@ -501,6 +571,19 @@ connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
 # picture path is the board's, the source is the cable's. So the broom,
 # not link_rst.
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins scanout/rst]
+# fbread's reset is wired HERE, from the broom, and deliberately not by
+# the AXI automation. The automation connects whatever its generated
+# proc_sys_reset produces, and whether that block is holding cannot be
+# read back from a build log or from software -- which is how an engine
+# came to sit in reset for three builds while every register a host can
+# see said it should be running. The broom is a signal whose state is
+# readable, and it already resets the scanout on this same clock.
+if {$fbread_en} {
+    set fbrstn [create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic fb_rstn]
+    set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] $fbrstn
+    connect_bd_net [get_bd_pins broom/Dout]  [get_bd_pins fb_rstn/Op1]
+    connect_bd_net [get_bd_pins fb_rstn/Res] [get_bd_pins fbread/rst_n]
+}
 # fbread's reset is NOT connected here. Its port declares
 # ASSOCIATED_RESET, so the AXI automation gives it the interconnect's
 # own peripheral reset -- which is the right source for a bus master:

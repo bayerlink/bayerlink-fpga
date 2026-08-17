@@ -42,6 +42,10 @@ RX_FIFO=${RX_FIFO:-256}
 # because there are then two consumers. On for a bench build, off for
 # a demo. Whether the board CAN is the board's to say, below.
 CAPTURE=${CAPTURE:-1}
+# Which engine feeds the display. 0 is the VDMA, which works; 1 is
+# fbread, which is right in simulation and has never fetched a byte on
+# this board. The default is the one that puts a picture on a screen.
+FBREAD=${FBREAD:-0}
 
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here"
@@ -80,7 +84,7 @@ cd "boards/$BOARD"
 # Both build-time choices reach the block design the same way: the
 # sample width for the glue's parameter, and whether to build the
 # capture branch at all.
-export BITS CAPTURE
+export BITS CAPTURE FBREAD
 vivado -mode batch -source bd.tcl
 vivado -mode batch -source impl_a.tcl
 vivado -mode batch -source impl_b.tcl
