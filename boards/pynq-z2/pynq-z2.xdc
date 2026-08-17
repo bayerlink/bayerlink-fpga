@@ -34,6 +34,26 @@ set_false_path -from [get_cells -hier -filter {NAME =~ */ctrl_gpio/*gpio_Data_Ou
 ## value that changes once a session.
 set_false_path -from [get_cells -hier -filter {NAME =~ */ctrl_gpio/*gpio2_Data_Out_reg*}]
 
+## The ISP's coefficient registers. They now live on the PROCESSOR's
+## clock and not the pixel clock, because a register file on a clock
+## recovered from the HDMI link has no clock whenever the link is down --
+## and an AXI slave that cannot answer hangs the processor that asked.
+## That cost a power cycle on 2026-08-17.
+##
+## Reading them from the pixel clock is therefore a crossing between two
+## genuinely unrelated clocks, which is what this states. It states only
+## that. It does NOT make the crossing safe: what will do that is the
+## arm-and-refuse contract -- software arms, the file refuses writes
+## while armed, so the values are provably still while the datapath
+## copies them -- and that is not built yet.
+##
+## Until it is, nothing writes these registers, so they hold their reset
+## values and never transition. That is what makes THIS bitstream safe,
+## and it is a fact about the software, not about the hardware. A driver
+## that starts writing coefficients before the contract lands can tear a
+## value, and the picture is where it would show.
+set_false_path -from [get_cells -hier -filter {NAME =~ */u_csr/reg_*}]
+
 ## link_reset: two paths here are asynchronous BY CONSTRUCTION, and
 ## timing them is not a conservative choice, it is a meaningless one.
 ##
