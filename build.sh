@@ -46,6 +46,10 @@ CAPTURE=${CAPTURE:-1}
 # fbread, which is right in simulation and has never fetched a byte on
 # this board. The default is the one that puts a picture on a screen.
 FBREAD=${FBREAD:-0}
+# Coefficients baked into the bitstream (0) or written over AXI4-Lite
+# (1). The ISP's ports differ, so this one flag drives both the
+# generator and the block design; they cannot disagree.
+CONTROL=${CONTROL:-0}
 
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here"
@@ -74,6 +78,7 @@ python3 gen/receiver.py --board "$BOARD" --fifo-depth "$RX_FIFO" \
 
 echo "== ISP (revela pipeline, twin-verified before it emits)"
 python3 gen/isp.py --width "$W" --height "$H" --bits "$BITS" \
+    ${CONTROL:+$([ "$CONTROL" = 1 ] && echo --control)} \
     --clock-mhz "$ISP_MHZ"
 
 echo "== display raster (np2hw scanout)"
@@ -84,7 +89,7 @@ cd "boards/$BOARD"
 # Both build-time choices reach the block design the same way: the
 # sample width for the glue's parameter, and whether to build the
 # capture branch at all.
-export BITS CAPTURE FBREAD
+export BITS CAPTURE FBREAD CONTROL
 vivado -mode batch -source bd.tcl
 vivado -mode batch -source impl_a.tcl
 vivado -mode batch -source impl_b.tcl
