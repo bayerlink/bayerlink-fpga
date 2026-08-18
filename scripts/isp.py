@@ -55,8 +55,13 @@ def main() -> int:
     gpio = MMIO(overlay.ip_dict["status_gpio"]["phys_addr"], 0x1000)
     vdma = MMIO(overlay.ip_dict["vdma"]["phys_addr"], 0x1000)
 
+    # Receiver activity = a header has been ACCEPTED (hdr_valid, bit
+    # 27). This used to read a probe bit whose slot the island's
+    # status bits now occupy -- and for one build it silently waited
+    # on "ISP producing", which is exactly the bit that a held island
+    # never raises. A start gate must watch the INPUT side.
     for _ in range(60):
-        if (gpio.read(0) >> 5) & 1:
+        if (gpio.read(0) >> 27) & 1:
             break
         time.sleep(0.5)
     else:
@@ -143,7 +148,12 @@ def main() -> int:
         # per frame is correct; anything else means the stream's framing
         # is not what the raster is anchoring to.
         sc = (s2 >> 17) & 0x7FFF
+        # The island's six levels -- see isl_cat in bd.tcl.
+        isl = (s1 >> 2) & 0x3F
         print(f"{tag}: lock={s1 & 1} ovf={(s1 >> 1) & 1} "
+              f"isl[rst={isl & 1} inV={(isl >> 1) & 1} inR={(isl >> 2) & 1} "
+              f"outV={(isl >> 3) & 1} shV={(isl >> 4) & 1} "
+              f"shR={(isl >> 5) & 1}] "
               f"refused={hdr & 1} bits={(hdr >> 4) & 0x1F} | scanout "
               f"armed={(sc >> 4) & 1} under={(sc >> 5) & 1} "
               f"misalign={(sc >> 6) & 1} win_refused={(sc >> 7) & 1} "

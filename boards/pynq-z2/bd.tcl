@@ -130,32 +130,70 @@ if {$capture} {
 } else {
     set isp_src {blrx/out}
 }
-# --- the ISP branch. At 1280 wide this rode the receiver's own clock:
-# the compiler cut every stage to 148.5 and the island retired. At
-# 1920 it did not fit either, until np2hw learned to read its line
-# buffers THROUGH A REGISTER: block RAM instead of a distributed-RAM
-# select tree that deepens with the line. The island is retired and
-# the ISP rides the receiver's own clock again, at any width.
-# The ISP reads the stream DIRECTLY. Until the island retired, this
-# branch went out to AXI-Stream and straight back through a pair whose
-# only purpose was to sit either side of a clock converter -- and once
-# the ISP came back onto the receiver's own clock there was no
-# converter left between them, so the pair was an elastic stream
-# turned into AXI and turned back, on one clock, for nothing.
+set cw [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz clk_out]
+# No_buffer: FCLK arrives from the PS already buffered; the default
+# expects a package PIN and builds an input path to nowhere -- an MMCM
+# that never sees an edge, and a perfectly silent dead clock.
+# Fed from FCLK1 (200 MHz), not FCLK0: the AXI clock moved to 1000/7
+# for scanout bandwidth, and 142.86 cannot synthesize an exact 148.5
+# (the nearest fractional divide lands 0.24% low). 200 x 3.7125 =
+# 742.5 VCO, /5 = 148.5 exactly -- the same VCO the 74.25 recipe used.
+set_property -dict [list CONFIG.PRIM_IN_FREQ {200.000} \
+    CONFIG.PRIM_SOURCE {No_buffer} \
+    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {148.500} \
+    CONFIG.USE_LOCKED {true} CONFIG.USE_RESET {false}] $cw
+connect_bd_net [get_bd_pins ps7/FCLK_CLK1] [get_bd_pins clk_out/clk_in1]
+
+# --- the ISP branch, an island on the BOARD'S OWN clock.
+#
+# This island existed once, retired when np2hw closed timing on the
+# receiver's clock, and is back for a reason that has nothing to do
+# with timing: the receiver's clock is recovered from the cable, so it
+# STOPS -- on unplug, and in the moments after the fabric is
+# reprogrammed. Everything that lived on it inherited that: an AXI
+# slave there hung the processor (power cycle, 2026-08-17), the
+# register file fled to the PS clock, and every coefficient became a
+# clock crossing with constraints in both directions.
+#
+# clk_out1 is 148.5MHz from FCLK_CLK1 -- no cable anywhere in its
+# ancestry -- and the scanout already runs on it. With the ISP and its
+# register file BOTH there, the coefficient crossing does not need
+# constraining, arming, or explaining: it is gone. One stream crossing
+# remains, in the converter below, proven vendor IP doing the one job.
+#
+# The pieces are the ORIGINAL island's: rx_axis dresses the elastic
+# stream as AXIS, the converter crosses, axis_unpack undresses it.
+# One layout, owned by rx_axis, both directions.
+set iin [create_bd_cell -type module -reference rx_axis isp_in_shim]
+set_property CONFIG.SAMPLE_BITS $sample_bits $iin
+connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp_in_shim/clk]
+foreach s {valid ready data sof eol last} {
+    connect_bd_net [get_bd_pins ${isp_src}_$s] [get_bd_pins isp_in_shim/in_$s]
+}
+set icdc [create_bd_cell -type ip -vlnv xilinx.com:ip:axis_clock_converter isp_cdc]
+connect_bd_intf_net [get_bd_intf_pins isp_in_shim/m_axis] [get_bd_intf_pins isp_cdc/S_AXIS]
+connect_bd_net [get_bd_pins dvi_rx/PixelClk]  [get_bd_pins isp_cdc/s_axis_aclk]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_cdc/m_axis_aclk]
+set iun [create_bd_cell -type module -reference axis_unpack isp_unpack]
+set_property CONFIG.SAMPLE_BITS $sample_bits $iun
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_unpack/clk]
+connect_bd_intf_net [get_bd_intf_pins isp_cdc/M_AXIS] [get_bd_intf_pins isp_unpack/s_axis]
 set isp [create_bd_cell -type module -reference revela_isp isp]
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp/clk]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp/clk]
 # The stream's own facts drive the pipeline context: header to ctx,
-# one owner end to end. Quasi-static by construction (they change at
-# header-accept, a full line before payload); the wrapper latches
-# them on each frame's SOF in its own domain (false-pathed in the XDC).
+# one owner end to end. This is now a REAL clock crossing -- pixel
+# domain to the island -- and it is safe for the same reason it always
+# was: the values change at header-accept, a full line before the
+# payload, and the wrapper latches them at each frame's SOF, by which
+# time they have been still for thousands of cycles. The XDC says so.
 foreach f {width height phase bits} {
     connect_bd_net [get_bd_pins blrx/hdr_$f] [get_bd_pins isp/hdr_$f]
 }
 foreach s {valid ready data sof eol last} {
-    connect_bd_net [get_bd_pins ${isp_src}_$s] [get_bd_pins isp/in_$s]
+    connect_bd_net [get_bd_pins isp_unpack/out_$s] [get_bd_pins isp/in_$s]
 }
 set iax [create_bd_cell -type module -reference isp_axis isp_out]
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins isp_out/clk]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_out/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp/out_$s] [get_bd_pins isp_out/in_$s]
 }
@@ -181,19 +219,8 @@ connect_bd_intf_net [get_bd_intf_pins spy_cdc/m_axis] [get_bd_intf_pins dma/S_AX
 # the sensor is configured to serve it. Pixel clock is OURS (static
 # 148.5 from FCLK0); rgb2dvi makes its own 5x serial clock (MMCM:
 # 742.5 sits inside the MMCM VCO window; a PLL's floor is above it).
-set cw [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz clk_out]
-# No_buffer: FCLK arrives from the PS already buffered; the default
-# expects a package PIN and builds an input path to nowhere -- an MMCM
-# that never sees an edge, and a perfectly silent dead clock.
-# Fed from FCLK1 (200 MHz), not FCLK0: the AXI clock moved to 1000/7
-# for scanout bandwidth, and 142.86 cannot synthesize an exact 148.5
-# (the nearest fractional divide lands 0.24% low). 200 x 3.7125 =
-# 742.5 VCO, /5 = 148.5 exactly -- the same VCO the 74.25 recipe used.
-set_property -dict [list CONFIG.PRIM_IN_FREQ {200.000} \
-    CONFIG.PRIM_SOURCE {No_buffer} \
-    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {148.500} \
-    CONFIG.USE_LOCKED {true} CONFIG.USE_RESET {false}] $cw
-connect_bd_net [get_bd_pins ps7/FCLK_CLK1] [get_bd_pins clk_out/clk_in1]
+# clk_out (the board's own 148.5) is created up with the receiver now:
+# the ISP island uses it before the display side does.
 
 # No v_tc, no v_axi4s_vid_out: that pair's lock was never witnessed
 # here across every mode it offers. The raster is GENERATED -- np2hw's
@@ -339,8 +366,34 @@ if {$capture} {
     connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins isp_sel/Din]
     connect_bd_net [get_bd_pins isp_sel/Dout] [get_bd_pins sw/sel]
 }
-connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins isp/rst]
-connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins isp_out/rst]
+# The island still FOLLOWS the link -- a half-frame left in the pipe
+# by an unplug is cleared the same way as before -- but through a
+# reset of its own, because rst_pix deasserts synchronously to a clock
+# the island does not use. proc_sys_reset re-synchronises the release
+# to clk_out1, and holds until the MMCM locks, which is what makes
+# power-up need no special case. Instantiated HERE, explicitly, with
+# an input whose state software can read (link_up in hdr_gpio) -- not
+# left to the automation, whose hidden resets cost three builds once.
+#
+# The register file is deliberately NOT in this reset: it rides
+# s_axil_aresetn, so coefficients survive a cable pull, and the
+# datapath reloads its copies the moment its own reset releases.
+set irst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_isp]
+connect_bd_net [get_bd_pins clk_out/clk_out1]  [get_bd_pins rst_isp/slowest_sync_clk]
+connect_bd_net [get_bd_pins link_rst/rst_pix]  [get_bd_pins rst_isp/ext_reset_in]
+connect_bd_net [get_bd_pins clk_out/locked]    [get_bd_pins rst_isp/dcm_locked]
+foreach cell {isp isp_out isp_unpack} {
+    connect_bd_net [get_bd_pins rst_isp/peripheral_reset] [get_bd_pins $cell/rst]
+}
+connect_bd_net [get_bd_pins rst_isp/peripheral_aresetn] \
+    [get_bd_pins isp_cdc/m_axis_aresetn]
+# The converter's pixel side follows the link directly, like the shim
+# feeding it: both are IN the pixel domain, where rst_pix is the law.
+set rlk [create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic rstn_link]
+set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] $rlk
+connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins rstn_link/Op1]
+connect_bd_net [get_bd_pins rstn_link/Res]    [get_bd_pins isp_cdc/s_axis_aresetn]
+connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins isp_in_shim/rst]
 connect_bd_net [get_bd_pins link_rst/rst_pix] [get_bd_pins blrx/rst]
 # The tallies clear on a deliberate ask, not on every cable drop: rst
 # now arrives from the LINK, and a counter reset by the event it counts
@@ -388,11 +441,42 @@ connect_bd_net [get_bd_pins blrx/refuse_code] [get_bd_pins hdr_cat/In1]
 connect_bd_net [get_bd_pins blrx/hdr_bits] [get_bd_pins hdr_cat/In2]
 connect_bd_net [get_bd_pins blrx/hdr_valid] [get_bd_pins hdr_cat/In3]
 connect_bd_net [get_bd_pins blrx/hdr_phase] [get_bd_pins hdr_cat/In4]
+# The island must say WHY it is idle. Held in reset, starved by the
+# converter, refusing input and producing nothing all look identical
+# from software -- no data, no error -- and telling those apart by
+# guesswork cost a day once (#20). Six levels, sampled raw across the
+# clock boundary: these are read as LEVELS for stuck-at diagnosis, not
+# as events, so the crossing needs no synchroniser to be useful.
+#   bit2 island reset held    bit3 stream reaching the ISP
+#   bit4 ISP accepting        bit5 ISP producing
+#   bit6 pixel side offering  bit7 pixel side accepted
+# These taps join EXISTING nets, so every one uses the -net form; the
+# plain form errors on a pin that is already connected.
+set islcat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat isl_cat]
+set_property CONFIG.NUM_PORTS {7} $islcat
+connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins rst_isp/peripheral_reset]] \
+    [get_bd_pins isl_cat/In0]
+connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins isp/in_valid]] \
+    [get_bd_pins isl_cat/In1]
+connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins isp/in_ready]] \
+    [get_bd_pins isl_cat/In2]
+connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins isp/out_valid]] \
+    [get_bd_pins isl_cat/In3]
+connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins isp_in_shim/in_valid]] \
+    [get_bd_pins isl_cat/In4]
+connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins isp_in_shim/in_ready]] \
+    [get_bd_pins isl_cat/In5]
+# Pad to the 16 bits the probe used to occupy, so the header facts
+# stay at bit 18 and every host script keeps its offsets.
+set islpad [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant isl_pad]
+set_property -dict [list CONFIG.CONST_WIDTH {10} CONFIG.CONST_VAL {0}] $islpad
+connect_bd_net [get_bd_pins isl_pad/dout] [get_bd_pins isl_cat/In6]
+
 set cat [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat status_cat]
 set_property CONFIG.NUM_PORTS {4} $cat
 connect_bd_net [get_bd_pins dvi_rx/aPixelClkLckd] [get_bd_pins status_cat/In0]
 connect_bd_net [get_bd_pins blrx/overflow] [get_bd_pins status_cat/In1]
-connect_bd_net [get_bd_pins probe/status] [get_bd_pins status_cat/In2]
+connect_bd_net [get_bd_pins isl_cat/dout] [get_bd_pins status_cat/In2]
 connect_bd_net [get_bd_pins hdr_cat/dout] [get_bd_pins status_cat/In3]
 
 # --- WHICH frame, and WHICH camera. Both status words are full to the
@@ -481,9 +565,16 @@ if {$control_en} {
     # that is where the port lived; the fix is in the wrapper, and this
     # says the same thing out loud so the two cannot drift apart.
     # Master and slave on one clock also means no clock converter.
-    connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins isp/s_axi_aclk]
+    # ...and on the ISLAND's clock, which is the whole point: the
+    # register file and the datapath that reads it share a domain, so
+    # the coefficient crossing that needed an arm for safety and false
+    # paths in both directions simply does not exist. clk_out1 never
+    # stops -- FCLK_CLK1 through an MMCM, no cable in its ancestry --
+    # so the lesson of 2026-08-17 (a slave must answer) still holds.
+    # The automation drops in the one AXI clock converter the PS needs.
+    connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp/s_axi_aclk]
     apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
-        {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/ps7/FCLK_CLK0} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
+        {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/clk_out/clk_out1} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
         [get_bd_intf_pins isp/s_axi]
 }
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
@@ -552,7 +643,11 @@ connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins axi_mem_intercon/S00_A
 # Stream-side clocks the automation does not own: everything AXI in
 # this design lives on FCLK0, so the crossings are exactly the two
 # declared ones (TMDS pixel clock in, FCLK0 out).
-connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins vdma/s_axis_s2mm_aclk]
+# The write side follows the ISP onto the island: producer and
+# consumer on one clock, no converter, and a clock that keeps running
+# through an unplug -- the engine can now finish or fault a frame
+# instead of freezing mid-word when the cable goes.
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vdma/s_axis_s2mm_aclk]
 # `cdc` belongs to the capture branch, so this belongs inside the same
 # guard. Left outside it, CAPTURE=0 -- a configuration this repo
 # documents and build.sh offers -- failed to build at all.

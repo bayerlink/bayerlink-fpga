@@ -34,42 +34,26 @@ set_false_path -from [get_cells -hier -filter {NAME =~ */ctrl_gpio/*gpio_Data_Ou
 ## value that changes once a session.
 set_false_path -from [get_cells -hier -filter {NAME =~ */ctrl_gpio/*gpio2_Data_Out_reg*}]
 
-## The ISP's coefficient registers. They now live on the PROCESSOR's
-## clock and not the pixel clock, because a register file on a clock
-## recovered from the HDMI link has no clock whenever the link is down --
-## and an AXI slave that cannot answer hangs the processor that asked.
-## That cost a power cycle on 2026-08-17.
-##
-## Reading them from the pixel clock is therefore a crossing between two
-## genuinely unrelated clocks, which is what this states. It states only
-## that. It does NOT make the crossing safe: what will do that is the
-## arm-and-refuse contract -- software arms, the file refuses writes
-## while armed, so the values are provably still while the datapath
-## copies them -- and that is not built yet.
-##
-## Until it is, nothing writes these registers, so they hold their reset
-## values and never transition. That is what makes THIS bitstream safe,
-## and it is a fact about the software, not about the hardware. A driver
-## that starts writing coefficients before the contract lands can tear a
-## value, and the picture is where it would show.
-set_false_path -from [get_cells -hier -filter {NAME =~ */u_csr/reg_*}]
+## The coefficient crossing is GONE, and so are the three false paths
+## that used to describe it. The register file and the datapath both
+## live on clk_out1 now -- the board's own 148.5, no cable in its
+## ancestry -- so register-to-datapath paths are ordinary same-domain
+## timing, and a false path left here would not be conservative, it
+## would HIDE real paths from analysis. A constraint file describes
+## the design it was written against; the design changed, so it did.
 
-## ...and the ACKNOWLEDGEMENT, coming back the other way. The datapath
-## says it has taken the values; that bit lands on the first flop of a
-## two-flop synchroniser, which is exactly the structure that makes the
-## crossing safe and exactly the path static timing cannot judge -- it
-## carries 0.6ns of logic and misses by 5ns purely because the two
-## clocks have no relationship.
-##
-## Constraining the FIRST FLOP of the synchroniser is the whole point:
-## everything after it is ordinary same-domain logic and stays timed.
-##
-## This was missing because when the constraint above was written the
-## acknowledgement did not exist -- the wire was never connected, so no
-## path existed to constrain. A constraint file can only describe the
-## design it was written against.
-set_false_path -to [get_pins -hier -filter {NAME =~ */u_csr/ack_s0_reg/D}]
-set_false_path -to [get_pins -hier -filter {NAME =~ */cfg_arm_req_s0_reg/D}]
+## What remains crossing INTO the island is the header's facts:
+## blrx latches width/height/phase/bits in the pixel domain, the ISP
+## wrapper latches them again at each frame's SOF in its own. Safe by
+## CONTRACT, not by timing: they change at header-accept, a full line
+## (~2200 clocks) before the first pixel, and the SOF that triggers
+## the wrapper's latch travels through the same converter behind them
+## -- by the time it arrives they have been still for thousands of
+## cycles. Between two unrelated 148.5MHz clocks the setup window is
+## effectively zero, so timing these paths is not strict, it is
+## meaningless. The receiver's diagnostic counters cross to the PS
+## GPIOs under the same contract: counts, read at leisure.
+set_false_path -from [get_cells -hier -filter {NAME =~ */blrx/*hdr_*_reg*}]
 
 ## link_reset: two paths here are asynchronous BY CONSTRUCTION, and
 ## timing them is not a conservative choice, it is a meaningless one.
@@ -101,7 +85,7 @@ set_property -dict { PACKAGE_PIN J19 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_da
 set_property -dict { PACKAGE_PIN J18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_p[2]}]
 set_property -dict { PACKAGE_PIN H18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_data_n[2]}]
 
-# There is no ISP clock island any more, and so no CDC exception here:
-# once np2hw learned to read its line buffers through a register, the
-# wide pipeline closed on the receiver's own pixel clock and the
-# header's facts reach it as an ordinary timed path.
+# The ISP clock island is BACK -- not for timing, which np2hw solved,
+# but because the receiver's clock stops with the cable and the
+# island's does not. Its one exception lives above, with the header
+# facts it belongs to.

@@ -31,6 +31,17 @@ module link_reset #(
     input  wire       pix_clk,      // the recovered one, which does not
     input  wire       locked_a,     // dvi2rgb's lock: ASYNCHRONOUS
     input  wire       soft_rst,     // the broom, still honoured
+    // DECLARED active-high, not merely commented: the block design
+    // PROPAGATES reset polarity, and with nothing stated here it
+    // decided a downstream proc_sys_reset's ext_reset_in was active
+    // LOW -- which held the ISP island in reset precisely while the
+    // link was up, and released it when the cable came out. A silent
+    // island, found in the generated XCI (C_EXT_RESET_HIGH=0,
+    // value_src "propagated") and confirmed by the island's own
+    // status bits. The tool believed a polarity no one had stated;
+    // now one is.
+    (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 rst_pix RST" *)
+    (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_HIGH" *)
     output wire       rst_pix,      // active high, for the pixel domain
     output reg        link_up,      // settled lock, in stable_clk
     output reg  [7:0] loss_count    // link drops seen, wrapping
