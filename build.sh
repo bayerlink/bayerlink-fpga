@@ -89,6 +89,9 @@ python3 gen/isp.py --width "$W" --height "$H" --bits "$BITS" \
 echo "== display raster (np2hw scanout)"
 python3 gen/scanout.py --mode "$MODE" --window "${W}x${H}"
 
+echo "== output tee (np2hw)"
+python3 gen/tee.py
+
 echo "== implementation"
 cd "boards/$BOARD"
 # Both build-time choices reach the block design the same way: the

@@ -13,6 +13,7 @@ update_ip_catalog
 add_files [file join $root hdl generated scanout.v] \
     [file join $root hdl generated fbread.v] [file join $root hdl link_reset.v] [file join $root hdl stream_switch.v] [file join $root hdl axis_unpack.v] \
     [file join $root hdl isp_axis.v] [file join $root hdl generated revela_isp.v] \
+    [file join $root hdl generated isp_tee.v] [file join $root hdl generated isp_skid.v] [file join $root hdl tee_shim.v] [file join $root hdl axis_pick.v] \
     [file join $root hdl generated bayerlink_rx.v] \
     [file join $root hdl rx_axis.v] [file join $root hdl vid_probe.v] \
     [file join $root hdl axis_spy.v]
@@ -192,12 +193,35 @@ foreach f {width height phase bits} {
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp_unpack/out_$s] [get_bd_pins isp/in_$s]
 }
+# --- the output TEE (#39): one ISP stream, two switchable consumers.
+# Branch B stores (VDMA -> framebuffer), branch A goes DIRECT to the
+# scanout. Off means DISCARD at the tee -- both off and the pipeline
+# still runs, which is what standby statistics will stand on -- and
+# switching is frame-atomic inside the tee, so neither consumer ever
+# receives a partial frame.
+#
+# The DIRECT branch carries a stated caveat: it is only whole for
+# sources whose frame rate matches the raster. This bench's Pi sends
+# 30fps into a 60Hz scanout, so direct mode here demonstrates the
+# mechanism and the honest failure (scanout refuses between frames),
+# not a production path. The framebuffer remains the rate adapter.
+set tsh [create_bd_cell -type module -reference tee_shim isp_tee]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_tee/clk]
+foreach s {valid ready data sof eol last} {
+    connect_bd_net [get_bd_pins isp/out_$s] [get_bd_pins isp_tee/in_$s]
+}
 set iax [create_bd_cell -type module -reference isp_axis isp_out]
 connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_out/clk]
 foreach s {valid ready data sof eol last} {
-    connect_bd_net [get_bd_pins isp/out_$s] [get_bd_pins isp_out/in_$s]
+    connect_bd_net [get_bd_pins isp_tee/b_$s] [get_bd_pins isp_out/in_$s]
 }
 connect_bd_intf_net [get_bd_intf_pins isp_out/m_axis] [get_bd_intf_pins vdma/S_AXIS_S2MM]
+# The direct branch, dressed the same way for the same sink dialect.
+set idx [create_bd_cell -type module -reference isp_axis isp_dir]
+connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_dir/clk]
+foreach s {valid ready data sof eol last} {
+    connect_bd_net [get_bd_pins isp_tee/a_$s] [get_bd_pins isp_dir/in_$s]
+}
 if {$capture} {
 set cdc [create_bd_cell -type ip -vlnv xilinx.com:ip:axis_clock_converter cdc]
 connect_bd_intf_net [get_bd_intf_pins shim/m_axis] [get_bd_intf_pins cdc/S_AXIS]
@@ -243,6 +267,21 @@ connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins hdmi_tx/PixelClk]
 make_bd_intf_pins_external [get_bd_intf_pins hdmi_tx/TMDS]
 set_property name hdmi_tx [get_bd_intf_ports TMDS_0]
 
+# The scanout's source is PICKED: the memory path (vdma or fbread,
+# whichever this build carries) or the ISP direct branch. The tee
+# upstream switches frame-atomically and scanout re-anchors on tuser,
+# so a mid-stream flip costs a frame, never a hang. `sel` joins in the
+# control section, where its GPIO lives.
+set pick [create_bd_cell -type module -reference axis_pick out_pick]
+# The pick is combinational -- no clock port -- so its interfaces
+# cannot inherit a frequency and default to a wrong one. Declared:
+# everything through it lives on the island's 148.5.
+foreach intf {a b m} {
+    set_property CONFIG.FREQ_HZ {148500000} [get_bd_intf_pins out_pick/$intf]
+}
+connect_bd_intf_net [get_bd_intf_pins isp_dir/m_axis] [get_bd_intf_pins out_pick/b]
+connect_bd_intf_net [get_bd_intf_pins out_pick/m] [get_bd_intf_pins scanout/s_axis]
+
 # VDMA grows its read side: the framebuffer out.
 # The read stream lives on the PIXEL clock: scanout pops at raster
 # pace with no elastic in between beyond the vdma's own line buffer.
@@ -264,15 +303,33 @@ if {$fbread_en} {
         CONFIG.c_use_fsync {0} \
         CONFIG.c_s2mm_genlock_mode {0}] $vdma
 } else {
+    # THREE frame stores, genlocked -- the answer to "2 or 3?" is 3,
+    # and the reasoning deserves recording: with two buffers and
+    # UNRELATED frame rates (30fps source, 60Hz raster) there is
+    # always a moment when the writer finishes and its only other
+    # buffer is the one on screen -- so it either waits (stalls the
+    # pipe, forbidden) or writes into the displayed frame (the tear
+    # this bench has photographed). Three is the minimum where the
+    # writer never waits, the reader never shows a partial frame, and
+    # the reader always picks the newest COMPLETED frame: each source
+    # frame shown twice, cleanly. 25MB of CMA against a 128MB pool.
+    #
+    # Genlock is configured DELIBERATELY and internally, because a
+    # propagated use_fsync=1 with a genlock slave and no pointer
+    # driver once left the read side waiting forever -- running while
+    # starving, no error bit. Dynamic master (s2mm) and dynamic slave
+    # (mm2s), pointer INTERNAL (GenlockSrc in DMACR, set by software),
+    # so nothing external needs to drive anything.
     set_property -dict [list CONFIG.c_include_mm2s {1} \
         CONFIG.c_mm2s_linebuffer_depth {4096} \
         CONFIG.c_use_fsync {0} \
-        CONFIG.c_mm2s_genlock_mode {0} \
-        CONFIG.c_s2mm_genlock_mode {0}] $vdma
-    connect_bd_intf_net [get_bd_intf_pins vdma/M_AXIS_MM2S] \
-        [get_bd_intf_pins scanout/s_axis]
+        CONFIG.c_num_fstores {3} \
+        CONFIG.c_mm2s_genlock_mode {3} \
+        CONFIG.c_s2mm_genlock_mode {2}] $vdma
     connect_bd_net [get_bd_pins clk_out/clk_out1] \
         [get_bd_pins vdma/m_axis_mm2s_aclk]
+    connect_bd_intf_net [get_bd_intf_pins vdma/M_AXIS_MM2S] \
+        [get_bd_intf_pins out_pick/a]
 }
 
 if {$fbread_en} {
@@ -283,7 +340,7 @@ if {$fbread_en} {
 # is run-time, because only Linux knows where it put the buffer.
 set fbr [create_bd_cell -type module -reference fbread fbread]
 connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins fbread/clk]
-connect_bd_intf_net [get_bd_intf_pins fbread/m_axis] [get_bd_intf_pins scanout/s_axis]
+connect_bd_intf_net [get_bd_intf_pins fbread/m_axis] [get_bd_intf_pins out_pick/a]
 
 set fbgeom [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant fb_lbeats]
 set_property -dict [list CONFIG.CONST_WIDTH {16} \
@@ -319,7 +376,11 @@ set ctrl [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio ctrl_gpio]
 # software; everything else about the fetch is the display's geometry
 # and is fixed at build. `enable` follows from the address being set, so
 # there is no separate go bit to forget.
-set_property -dict [list CONFIG.C_GPIO_WIDTH {3} CONFIG.C_ALL_OUTPUTS {1} \
+# Five software bits now: broom(0), consumer select(1), fbread
+# fetch(2), STORE enable(3), DIRECT enable(4). The output enables are
+# quasi-static and honoured by the tee at frame boundaries only, so a
+# write here changes the picture a frame later and never tears it.
+set_property -dict [list CONFIG.C_GPIO_WIDTH {5} CONFIG.C_ALL_OUTPUTS {1} \
     CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {32} \
     CONFIG.C_ALL_OUTPUTS_2 {1}] $ctrl
 # Bit 0 is the broom, bit 1 selects the stream's consumer (judge/ISP).
@@ -327,6 +388,19 @@ set brm [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice broom]
 set_property -dict [list CONFIG.DIN_WIDTH {3} CONFIG.DIN_FROM {0} \
     CONFIG.DIN_TO {0}] $brm
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins broom/Din]
+# The tee's enables: quasi-static software bits, sampled by the tee at
+# frame boundaries only, crossing on the wholesale ctrl_gpio false path.
+set osl [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice o_store]
+set_property -dict [list CONFIG.DIN_WIDTH {5} CONFIG.DIN_FROM {3} \
+    CONFIG.DIN_TO {3}] $osl
+connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins o_store/Din]
+connect_bd_net [get_bd_pins o_store/Dout] [get_bd_pins isp_tee/en_b]
+set odl [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice o_direct]
+set_property -dict [list CONFIG.DIN_WIDTH {5} CONFIG.DIN_FROM {4} \
+    CONFIG.DIN_TO {4}] $odl
+connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins o_direct/Din]
+connect_bd_net [get_bd_pins o_direct/Dout] [get_bd_pins isp_tee/en_a]
+connect_bd_net [get_bd_pins o_direct/Dout] [get_bd_pins out_pick/sel]
 if {$fbread_en} {
 connect_bd_net [get_bd_pins ctrl_gpio/gpio2_io_o] [get_bd_pins fbread/base_addr]
 # Bit 2 enables the fetch, and is written AFTER the address. Derived
@@ -382,7 +456,7 @@ set irst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_isp]
 connect_bd_net [get_bd_pins clk_out/clk_out1]  [get_bd_pins rst_isp/slowest_sync_clk]
 connect_bd_net [get_bd_pins link_rst/rst_pix]  [get_bd_pins rst_isp/ext_reset_in]
 connect_bd_net [get_bd_pins clk_out/locked]    [get_bd_pins rst_isp/dcm_locked]
-foreach cell {isp isp_out isp_unpack} {
+foreach cell {isp isp_out isp_unpack isp_tee isp_dir} {
     connect_bd_net [get_bd_pins rst_isp/peripheral_reset] [get_bd_pins $cell/rst]
 }
 connect_bd_net [get_bd_pins rst_isp/peripheral_aresetn] \

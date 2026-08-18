@@ -44,6 +44,15 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=10.0,
                         help="heartbeat seconds; changes print immediately "
                              "regardless, so a swap is never missed")
+    parser.add_argument("--output", choices=("store", "direct", "both", "off"),
+                        default="store",
+                        help="which tee branches run: the framebuffer "
+                             "store, the direct-to-scanout branch, both, "
+                             "or neither (standby -- the pipeline keeps "
+                             "running and discards). direct is only whole "
+                             "for sources matching the raster's frame "
+                             "rate; this bench's Pi does not, so expect "
+                             "scanout to refuse between frames")
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="status loop duration; 0 = forever")
     args = parser.parse_args()
@@ -86,7 +95,13 @@ def main() -> int:
     # past the picture; fbread starts exactly at the first pixel and
     # reads exactly MODE_H lines. A line of DDR is a cheap guard against
     # an off-by-one in a fetch engine reading someone else's pages.
-    fb = allocate(shape=(MODE_H + 1, MODE_W, 4), dtype="u1")
+    # THREE frames, genlocked, plus the guard row: with two buffers and
+    # unrelated frame rates the writer eventually meets the displayed
+    # frame -- wait (stall the pipe) or tear. Three is the minimum where
+    # neither happens and the reader always shows the newest COMPLETED
+    # frame. 25MB against a 128MB CMA pool.
+    FSIZE = MODE_H * MODE_W * 4
+    fb = allocate(shape=(3 * MODE_H + 1, MODE_W, 4), dtype="u1")
     fb[:] = 16
     fb.flush()
 
@@ -100,9 +115,15 @@ def main() -> int:
         # The VDMA's data lags its own start-of-frame marker by a number
         # that lands somewhere new on every lock. Start the read that far
         # in. Measured per bitstream with ruler.py and a capture card.
-        vdma.write(0x00, 0x3)
+        # GenlockEn (bit3) + internal GenlockSrc (bit7): the read side
+        # follows the write side's frame pointer inside the core, one
+        # completed frame behind. A propagated fsync+slave with nothing
+        # driving the pointer once starved this engine forever, so the
+        # pointer source is INTERNAL, on purpose, in software's hand.
+        vdma.write(0x00, 0x3 | (1 << 3) | (1 << 7))
         for n in range(3):
-            vdma.write(0x5C + 4 * n, fb.physical_address + args.skew * 4)
+            vdma.write(0x5C + 4 * n,
+                       fb.physical_address + n * FSIZE + args.skew * 4)
         vdma.write(0x58, MODE_W * 4)
         vdma.write(0x54, MODE_W * 4)
         vdma.write(0x50, MODE_H)
@@ -111,9 +132,9 @@ def main() -> int:
     x0 = (MODE_W - ISP_W) // 2
     y0 = (MODE_H - ISP_H) // 2
     base = fb.physical_address + (y0 * MODE_W + x0) * 4
-    vdma.write(0x30, 0x3)
+    vdma.write(0x30, 0x3 | (1 << 3) | (1 << 7))
     for n in range(3):
-        vdma.write(0xAC + 4 * n, base)
+        vdma.write(0xAC + 4 * n, base + n * FSIZE)
     vdma.write(0xA8, MODE_W * 4)                # stride
     vdma.write(0xA4, ISP_W * 4)                 # hsize
     vdma.write(0xA0, ISP_H)                     # vsize -> go
@@ -121,9 +142,14 @@ def main() -> int:
     # Only now flip the stream into the armed S2MM, so the first frame
     # it ever sees starts at a tuser boundary.  Bit1 = consumer, bit0 =
     # broom; the broom sweeps while ISP mode is held.
-    ctrl.write(0, 0x3)
+    # Base control word: consumer select (bit1) plus the tee enables --
+    # store (bit3) and direct (bit4). The tee honours changes at frame
+    # boundaries only, so these flip whole frames, never mid-frame.
+    tee_bits = {"store": 0x8, "direct": 0x10, "both": 0x18, "off": 0x0}
+    cbase = 0x2 | tee_bits[args.output]
+    ctrl.write(0, cbase | 1)
     time.sleep(0.05)
-    ctrl.write(0, 0x2)
+    ctrl.write(0, cbase)
     # ADDRESS FIRST, THEN ENABLE, and not the other way round: those 32
     # bits cross into the display clock without a synchroniser because
     # they are still by the time they matter, and enable rising is what
@@ -133,7 +159,7 @@ def main() -> int:
         # display clock without a synchroniser because they are still by
         # the time they matter, and enable rising says they are.
         time.sleep(0.01)
-        ctrl.write(0, 0x6)
+        ctrl.write(0, cbase | 0x4)
     time.sleep(0.1)
 
     hgpio = MMIO(overlay.ip_dict["hdr_gpio"]["phys_addr"], 0x1000)
@@ -236,7 +262,7 @@ def main() -> int:
             # second, and COUNTED, because a restart happening often
             # enough to matter is a bug report, not a recovery.
             if (args.reader == "vdma" and time.time() - unhalt_t > 1.0
-                    and now[2]):                       # link up
+                    and now[2] and args.output in ("store", "both")):
                 sr = vdma.read(0x34)
                 if sr & 1:                             # Halted
                     vdma.write(0x34, sr)               # W1C the stickies
