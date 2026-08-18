@@ -568,14 +568,62 @@ if {$control_en} {
     # ...and on the ISLAND's clock, which is the whole point: the
     # register file and the datapath that reads it share a domain, so
     # the coefficient crossing that needed an arm for safety and false
-    # paths in both directions simply does not exist. clk_out1 never
-    # stops -- FCLK_CLK1 through an MMCM, no cable in its ancestry --
-    # so the lesson of 2026-08-17 (a slave must answer) still holds.
-    # The automation drops in the one AXI clock converter the PS needs.
-    connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp/s_axi_aclk]
+    # paths in both directions simply does not exist.
+    #
+    # But NOT the island's RESET. The island follows the link; the bus
+    # must not. The first build of this let the automation choose the
+    # crossing's reset, and it grabbed the only proc_sys_reset in the
+    # domain -- rst_isp, the link's -- so a cable pull held the
+    # register file's arready at zero and the next read of 0x40000000
+    # hung the processor. The same lesson as the pixel-clocked slave,
+    # one level up: last time a CLOCK that stopped with the cable,
+    # this time a RESET held by it. Anything a host can reach must
+    # answer, and that means its clock AND its reset answer to the
+    # board, not to the cable.
+    #
+    # So nothing here is left for the automation to guess: the bus
+    # gets its own reset (rst_bus -- released once the PS is up and
+    # the MMCM locks, deliberately blind to the link), and the clock
+    # converter is placed EXPLICITLY, every clock and reset named.
+    # The automation is only ever handed the FCLK0 side, where there
+    # is nothing cross-domain left to decide.
+    set brst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_bus]
+    connect_bd_net [get_bd_pins clk_out/clk_out1]   [get_bd_pins rst_bus/slowest_sync_clk]
+    connect_bd_net [get_bd_pins ps7/FCLK_RESET0_N]  [get_bd_pins rst_bus/ext_reset_in]
+    connect_bd_net [get_bd_pins clk_out/locked]     [get_bd_pins rst_bus/dcm_locked]
+    connect_bd_net [get_bd_pins clk_out/clk_out1]   [get_bd_pins isp/s_axi_aclk]
+    # The regfile's reset pin is CONNECTED BEFORE the automation runs,
+    # because a pin already taken is a pin the automation leaves alone.
+    connect_bd_net [get_bd_pins rst_bus/peripheral_aresetn] [get_bd_pins isp/s_axi_aresetn]
     apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
         {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/clk_out/clk_out1} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
         [get_bd_intf_pins isp/s_axi]
+    # ...and then its choices are REPAIRED, because the automation also
+    # picks a reset for the interconnect port it creates in the island
+    # clock domain, and it picks whatever proc_sys_reset it likes the
+    # look of. The wedging build had M03_ARESETN on rst_isp: the
+    # crossing coupler itself held in reset by the link, so even a
+    # regfile with a sound reset sat behind a dead port. Every pin the
+    # automation put on the link's reset moves to the bus's, and the
+    # build REFUSES if any survives -- this is a correctness invariant,
+    # not a preference.
+    set busnet [get_bd_nets -of_objects [get_bd_pins rst_bus/peripheral_aresetn]]
+    foreach pin [get_bd_pins -quiet ps7_axi_periph/*ARESETN*] {
+        set n [get_bd_nets -quiet -of_objects $pin]
+        if {$n ne "" && [string match "*rst_isp*" [get_property NAME $n]]} {
+            disconnect_bd_net $n $pin
+            connect_bd_net -net $busnet $pin
+            puts "bd.tcl: moved $pin off the link's reset"
+        }
+    }
+    foreach pin [get_bd_pins -quiet ps7_axi_periph/*ARESETN*] {
+        set n [get_bd_nets -quiet -of_objects $pin]
+        if {$n ne "" && [string match "*rst_isp*" [get_property NAME $n]]} {
+            error "bd.tcl: $pin still rides the link's reset -- a cable\
+ pull would hold the bus port in reset and hang the processor"
+        }
+    }
+        [get_bd_pins isp_bus_cdc/s_axi_aresetn]
 }
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
