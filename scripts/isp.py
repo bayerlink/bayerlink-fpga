@@ -13,7 +13,9 @@ point two VDMA channels at one buffer, flip the mode bit, report.
 import argparse
 import signal
 import sys
+import json
 import time
+from pathlib import Path
 
 from pynq import Overlay, allocate, MMIO
 
@@ -60,13 +62,24 @@ def main() -> int:
     # status bits now occupy -- and for one build it silently waited
     # on "ISP producing", which is exactly the bit that a held island
     # never raises. A start gate must watch the INPUT side.
-    for _ in range(60):
-        if (gpio.read(0) >> 27) & 1:
-            break
+    #
+    # And it WAITS. The hardware self-heals from any order -- booted
+    # with no cable, it parks and comes up the moment a source appears
+    # (measured 2026-08-18: lock=0/rst=1 to frames flowing on plug-in,
+    # no software touch). A tool that gave up after 30 seconds was the
+    # only piece that did not, so "start the board, then plug the
+    # camera" only worked if you were quick. The wait is bounded by
+    # --seconds like every other wait in this script; it just is not
+    # bounded by impatience.
+    waited = time.time()
+    while not (gpio.read(0) >> 27) & 1:
+        if 0 < args.seconds <= time.time() - waited:
+            print("no receiver activity within the run's own budget")
+            return 2
+        if (time.time() - waited) % 30 < 0.5:
+            print(f"waiting for a source... ({time.time() - waited:.0f}s, "
+                  "plug the camera whenever)")
         time.sleep(0.5)
-    else:
-        print("no receiver activity: is the source streaming?")
-        return 2
 
     # One spare line, kept although the reason for it is gone. It
     # existed because the read started `skew` pixels in and ran that far
@@ -125,6 +138,33 @@ def main() -> int:
 
     hgpio = MMIO(overlay.ip_dict["hdr_gpio"]["phys_addr"], 0x1000)
 
+    # A CONTROL build boots NEUTRAL -- gains 1.0, identity matrix --
+    # which on this sensor is a green picture with no red. That is
+    # correct hardware behaviour and wrong bench behaviour: real
+    # software loads the calibration, so this does. Both files sit
+    # beside this script; the map answers where, the defaults what.
+    # ("red is absent" -- 2026-08-18, and it was wb.gain_0_0 at 256
+    # where the calibration wanted 412.)
+    map_p = Path(__file__).parent / "revela_isp.regmap.json"
+    def_p = Path(__file__).parent / "revela_isp.defaults.json"
+    if "isp" in overlay.ip_dict and map_p.exists() and def_p.exists():
+        rmap = json.loads(map_p.read_text())
+        base = overlay.ip_dict["isp"]["phys_addr"]
+        csr = MMIO(base, 1 << rmap["control"]["address_bits"])
+        addr = {f"{b['path']}.{r['name']}": (r["address"], r["bits"])
+                for b in rmap["blocks"] for r in b["registers"]}
+        for key, val in json.loads(def_p.read_text()).items():
+            if key in addr:
+                a, bits = addr[key]
+                csr.write(a, (val + (1 << bits)) % (1 << bits))
+        csr.write(addr["pipe.commit"][0], 1)
+        deadline = time.time() + 1.0
+        while (csr.read(addr["pipe.commit"][0]) & 1) and time.time() < deadline:
+            time.sleep(0.005)
+        state = "applied" if not (csr.read(addr["pipe.commit"][0]) & 1) \
+            else "PENDING (no frames yet; lands at the first boundary)"
+        print(f"calibration: {state}")
+
     def identity():
         """(source, resyncs, link up, drops) -- the one word a swap moves."""
         w = hgpio.read(0x8)
@@ -173,6 +213,7 @@ def main() -> int:
     # same as not seeing them.
     last = identity()
     beat = t0
+    unhalts, unhalt_t = 0, 0.0
     try:
         while args.seconds <= 0 or time.time() - t0 < args.seconds:
             time.sleep(0.05)
@@ -186,6 +227,27 @@ def main() -> int:
             if time.time() - beat >= args.interval:
                 beat = time.time()
                 report(f"t+{time.time() - t0:4.0f}s")
+            # SUPERVISOR, and labelled a patch: a VDMA that halts on a
+            # framing hiccup (SOFLateErr at a mid-frame unplug) never
+            # restarts itself, so the link would heal and the picture
+            # would stay frozen forever. The real fix retires the
+            # engine (#20/#39); until then a halted writer is cleared
+            # and re-armed -- only while the link is up, at most once a
+            # second, and COUNTED, because a restart happening often
+            # enough to matter is a bug report, not a recovery.
+            if (args.reader == "vdma" and time.time() - unhalt_t > 1.0
+                    and now[2]):                       # link up
+                sr = vdma.read(0x34)
+                if sr & 1:                             # Halted
+                    vdma.write(0x34, sr)               # W1C the stickies
+                    vdma.write(0x30, 0x3)              # run, circular
+                    vdma.write(0xA8, MODE_W * 4)
+                    vdma.write(0xA4, ISP_W * 4)
+                    vdma.write(0xA0, ISP_H)            # vsize -> go
+                    unhalts += 1
+                    unhalt_t = time.time()
+                    report(f"t+{time.time() - t0:4.0f}s UNHALT #{unhalts} "
+                           f"(s2mm was 0x{sr:08x})")
     except KeyboardInterrupt:
         pass
     finally:
