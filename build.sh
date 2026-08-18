@@ -99,6 +99,12 @@ vivado -mode batch -source bd.tcl
 vivado -mode batch -source impl_a.tcl
 vivado -mode batch -source impl_b.tcl
 
+echo "== audit of the design AS BUILT"
+# checkbd reads the intent; this reads what the automation and the
+# polarity propagation actually did. Every rule in it is a board hang
+# this bench already paid for once.
+python3 "$here/scripts/checkhwh.py" "$here/boards/$BOARD/out/rx.hwh"
+
 echo
 echo "artifacts: boards/$BOARD/out/rx.bit and rx.hwh"
 echo "NEXT: measure the scanout skew for THIS bitstream -- it is not"
