@@ -69,6 +69,11 @@ if not facts.get("capture", False):
 EOF
 fi
 
+# Twenty seconds here against twenty minutes there: Tcl reports a bad
+# reference by running into it, after synthesising everything above.
+echo "== block design checks"
+python3 scripts/checkbd.py "boards/$BOARD/bd.tcl"
+
 echo "== receiver (np2hw bayerlink_in)"
 # --fifo-depth is PINNED, not left to the generator's default: the
 # verified bitstream was built at 256 and a different depth is a

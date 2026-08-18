@@ -54,6 +54,23 @@ set_false_path -from [get_cells -hier -filter {NAME =~ */ctrl_gpio/*gpio2_Data_O
 ## value, and the picture is where it would show.
 set_false_path -from [get_cells -hier -filter {NAME =~ */u_csr/reg_*}]
 
+## ...and the ACKNOWLEDGEMENT, coming back the other way. The datapath
+## says it has taken the values; that bit lands on the first flop of a
+## two-flop synchroniser, which is exactly the structure that makes the
+## crossing safe and exactly the path static timing cannot judge -- it
+## carries 0.6ns of logic and misses by 5ns purely because the two
+## clocks have no relationship.
+##
+## Constraining the FIRST FLOP of the synchroniser is the whole point:
+## everything after it is ordinary same-domain logic and stays timed.
+##
+## This was missing because when the constraint above was written the
+## acknowledgement did not exist -- the wire was never connected, so no
+## path existed to constrain. A constraint file can only describe the
+## design it was written against.
+set_false_path -to [get_pins -hier -filter {NAME =~ */u_csr/ack_s0_reg/D}]
+set_false_path -to [get_pins -hier -filter {NAME =~ */cfg_arm_req_s0_reg/D}]
+
 ## link_reset: two paths here are asynchronous BY CONSTRUCTION, and
 ## timing them is not a conservative choice, it is a meaningless one.
 ##

@@ -553,8 +553,11 @@ connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins axi_mem_intercon/S00_A
 # this design lives on FCLK0, so the crossings are exactly the two
 # declared ones (TMDS pixel clock in, FCLK0 out).
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins vdma/s_axis_s2mm_aclk]
-foreach pin {cdc/m_axis_aclk} {
-    connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins $pin]
+# `cdc` belongs to the capture branch, so this belongs inside the same
+# guard. Left outside it, CAPTURE=0 -- a configuration this repo
+# documents and build.sh offers -- failed to build at all.
+if {$capture} {
+    connect_bd_net [get_bd_pins ps7/FCLK_CLK0] [get_bd_pins cdc/m_axis_aclk]
 }
 
 # RESETS the automation does not own. A floating aresetn is a HELD
@@ -572,8 +575,10 @@ connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins rstn_pix/Op1]
 # definition a moment when both clocks run. This converter belongs to
 # the capture branch and keeps the broom, which is honest -- it is a
 # bring-up path, and it is brought up by hand.
-connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/s_axis_aresetn]
-connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
+if {$capture} {
+    connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/s_axis_aresetn]
+    connect_bd_net [get_bd_pins rstn_pix/Res] [get_bd_pins cdc/m_axis_aresetn]
+}
 # The display deliberately does NOT follow the link. The scanout runs
 # on this board's own 148.5 MHz, and a TV that loses sync every time a
 # camera is unplugged is worse than one showing a stale frame: the
@@ -609,8 +614,10 @@ assign_bd_address
 # Explicitly: both stream engines write the DDR through HP0. The
 # automation left dma/Data_S2MM UNMAPPED and validate called that a
 # warning -- ten builds of silence for want of one segment.
-assign_bd_address -target_address_space /dma/Data_S2MM \
-    [get_bd_addr_segs ps7/S_AXI_HP0/HP0_DDR_LOWOCM] -force
+if {$capture} {
+    assign_bd_address -target_address_space /dma/Data_S2MM \
+        [get_bd_addr_segs ps7/S_AXI_HP0/HP0_DDR_LOWOCM] -force
+}
 assign_bd_address -target_address_space /vdma/Data_S2MM \
     [get_bd_addr_segs ps7/S_AXI_HP0/HP0_DDR_LOWOCM] -force
 assign_bd_address -target_address_space /vdma/Data_MM2S \
