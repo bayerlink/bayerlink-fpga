@@ -32,7 +32,7 @@ def main() -> int:
                              "is right in simulation and does not yet fetch "
                              "a byte on this board")
     parser.add_argument("--skew", type=int, default=0,
-                        help="vdma only: the read engine's data lags its own "
+                        help="the write engine's data lags its own "
                              "start-of-frame by a number of beats that is "
                              "MEASURED, not derived -- it lands somewhere new "
                              "on every lock. 0 is this bitstream's, checked "
@@ -108,9 +108,15 @@ def main() -> int:
     # Read side, one way or the other.
     if args.reader == "fbread":
         # fbread owns its addressing, so its first beat IS the frame's
-        # first pixel: no offset to measure, no --skew to carry. Only
-        # WHERE Linux put the buffer can be known here.
-        ctrl.write(0x8, fb.physical_address)
+        # first pixel of what is IN the buffer. The read-side roll is
+        # gone -- and its absence decomposed the old measurement: the
+        # single --skew was always the SUM of two rolls, and the
+        # WRITE engine's half remains (the VDMA s2mm lands frames at
+        # a per-lock offset; 48 px measured 2026-08-19, from the
+        # same 0/16/48/80 family as ever). So --skew survives here,
+        # applied to the base address, until #32's fbwrite owns the
+        # write side the way fbread now owns the read.
+        ctrl.write(0x8, fb.physical_address + args.skew * 4)
     else:
         # The VDMA's data lags its own start-of-frame marker by a number
         # that lands somewhere new on every lock. Start the read that far
@@ -160,9 +166,41 @@ def main() -> int:
         # the time they matter, and enable rising says they are.
         time.sleep(0.01)
         ctrl.write(0, cbase | 0x4)
+
+        # THE ROTATION, in software until #32 publishes it in fabric:
+        # fbread must read the buffer the writer FINISHED LAST, never
+        # the one being written -- a fixed base met the cycling writer
+        # once per three frames, a 10 Hz flicker photographed
+        # 2026-08-19. The s2mm's PARK_PTR register says which store
+        # it is writing NOW (bits 28:24); last completed is one
+        # behind. fbread samples base_addr at each frame restart, so
+        # a mid-frame write here lands cleanly on the next frame.
+        # A 5 ms poll is three chances per source frame -- and this
+        # thread is exactly the kind of software-in-the-loop that
+        # #32's fbwrite exists to retire, labelled as such.
+        import os
+        import threading
+
+        def follow_writer():
+            last = -1
+            while True:
+                wr = (vdma.read(0x28) >> 24) & 0x1F
+                done = (wr + 2) % 3
+                if done != last:
+                    ctrl.write(0x8,
+                               fb.physical_address + done * FSIZE
+                               + args.skew * 4)
+                    last = done
+                time.sleep(0.005)
+        if os.environ.get("FB_FOLLOW", "1") == "1":
+            threading.Thread(target=follow_writer, daemon=True).start()
+        else:
+            print("fbread: follower OFF (FB_FOLLOW=0) -- fixed base, "
+                  "for experiments that must not restart the engine")
     time.sleep(0.1)
 
     hgpio = MMIO(overlay.ip_dict["hdr_gpio"]["phys_addr"], 0x1000)
+    heals = [0]
 
     # A CONTROL build boots NEUTRAL -- gains 1.0, identity matrix --
     # which on this sensor is a green picture with no red. That is
@@ -207,7 +245,27 @@ def main() -> int:
         src, resyncs = idw & 0xFF, (idw >> 8) & 0xFF
         up, losses = (idw >> 16) & 1, (idw >> 17) & 0xFF
         fb_under, fb_err = (idw >> 25) & 1, (idw >> 26) & 1
-        dbg = (idw >> 27) & 0x1F   # run,en,arvalid,started,under
+        dbg = (idw >> 27) & 0x1F   # run,acct,short,stalled,long
+        # AUTO-HEAL, labelled as the patch it is: the engine can
+        # stall with its books pinned (acct latches the violation
+        # class -- arrivals exceeding bookings, mechanism still
+        # under investigation). Enable-rise is a full clean restart
+        # in fabric now, so the heal is one toggle. Every heal is
+        # COUNTED and printed: a silent workaround would bury the
+        # evidence the root cause needs.
+        # heal on FAULT STICKIES only. 'stalled' fires whenever the
+        # prefetch FIFO is comfortably full -- which is HEALTH -- and
+        # a heal triggered on it executed a working engine once per
+        # heartbeat for an evening. acct/short/long latch only on a
+        # real protocol violation.
+        if args.reader == "fbread" and (dbg & 0b10110):
+            heals[0] += 1
+            cur = ctrl.read(0)
+            ctrl.write(0, cur & ~0x4)
+            time.sleep(0.002)
+            ctrl.write(0, cur | 0x4)
+            print(f"fbread HEALED (#{heals[0]}): stalled=1, "
+                  f"acct={(dbg >> 2) & 1} -- books reset by enable rise")
         hdr = s1 >> 18
         # scanout's status word: sof-per-frame[2:0], locked, armed,
         # underflow, misalign, refused. Exactly one start-of-frame beat
@@ -228,8 +286,9 @@ def main() -> int:
               f"src={src} frame={seq} link={'up' if up else 'DOWN'} "
               f"drops={losses} resyncs={resyncs} "
               f"fb_under={fb_under} fb_err={fb_err} "
-              f"fb[run={dbg & 1} en={(dbg >> 1) & 1} "
-              f"arvalid={(dbg >> 2) & 1} started={(dbg >> 3) & 1}]")
+              f"fb[run={dbg & 1} acct={(dbg >> 1) & 1} "
+              f"short={(dbg >> 2) & 1} stalled={(dbg >> 3) & 1} "
+              f"long={(dbg >> 4) & 1}]")
 
     report("up")
     t0 = time.time()
