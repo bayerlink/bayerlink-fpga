@@ -83,7 +83,7 @@ python3 scripts/checkbd.py "boards/$BOARD/bd.tcl"
 echo "== receiver (np2hw bayerlink_in)"
 # --fifo-depth is PINNED, not left to the generator's default: the
 # verified bitstream was built at 256 and a different depth is a
-# different design. Raising it needs a rebuild and a re-measured skew.
+# different design.
 python3 gen/receiver.py --board "$BOARD" --fifo-depth "$RX_FIFO" \
     --bits "$BITS"
 
@@ -118,5 +118,5 @@ python3 "$here/scripts/checkhwh.py" "$here/boards/$BOARD/out/rx.hwh"
 
 echo
 echo "artifacts: boards/$BOARD/out/rx.bit and rx.hwh"
-echo "NEXT: measure the scanout skew for THIS bitstream -- it is not"
-echo "portable between builds. See the README, 'After the build'."
+echo "NEXT: if the picture sits displaced, measure the write-side skew"
+echo "-- it re-rolls per link lock. See the README, 'After the build'."

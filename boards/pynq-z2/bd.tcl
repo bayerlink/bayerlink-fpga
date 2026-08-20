@@ -93,11 +93,12 @@ set sample_bits [expr {[info exists ::env(BITS)] ? $::env(BITS) : 10}]
 # port); whether this build DOES is build.sh's. build.sh resolves the
 # two and exports the answer.
 set capture [expr {[info exists ::env(CAPTURE)] ? $::env(CAPTURE) : 1}]
-# WHICH read engine feeds the display. 0 is the VDMA, which works and has
-# always worked; 1 is fbread, which is right in simulation and does not
-# yet fetch a byte on this board. The default is the one that puts a
-# picture on a screen. A new engine does not get to be the only engine
-# until it has been one that works.
+# WHICH read engine feeds the display. 0 is the VDMA, the historic
+# engine; 1 is fbread, which owns its addressing (first beat IS the
+# frame's first pixel, nothing to measure) and has run clean hardware
+# days. The default still names the VDMA and flips only with a build
+# cycle that retires the read side deliberately -- a default does not
+# change between two bitstreams that must stay comparable.
 set fbread_en [expr {[info exists ::env(FBREAD)] ? $::env(FBREAD) : 0}]
 # BAKED or LIVE coefficients. 0 bakes them into the wrapper, which is
 # the demo that has a picture behind it; 1 brings up np2hw's AXI4-Lite
@@ -197,7 +198,7 @@ foreach f {width height phase bits} {
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp_unpack/out_$s] [get_bd_pins isp/in_$s]
 }
-# --- the output TEE (#39): one ISP stream, two switchable consumers.
+# --- the output TEE: one ISP stream, two switchable consumers.
 # Branch B stores (VDMA -> framebuffer), branch A goes DIRECT to the
 # scanout. Off means DISCARD at the tee -- both off and the pipeline
 # still runs, which is what standby statistics will stand on -- and
@@ -522,7 +523,7 @@ connect_bd_net [get_bd_pins blrx/hdr_phase] [get_bd_pins hdr_cat/In4]
 # The island must say WHY it is idle. Held in reset, starved by the
 # converter, refusing input and producing nothing all look identical
 # from software -- no data, no error -- and telling those apart by
-# guesswork cost a day once (#20). Six levels, sampled raw across the
+# guesswork cost a day once. Six levels, sampled raw across the
 # clock boundary: these are read as LEVELS for stuck-at diagnosis, not
 # as events, so the crossing needs no synchroniser to be useful.
 #   bit2 island reset held    bit3 stream reaching the ISP

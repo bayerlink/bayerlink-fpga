@@ -28,9 +28,11 @@ def main() -> int:
     parser.add_argument("--bit", default="rx.bit")
     parser.add_argument("--reader", choices=("vdma", "fbread"), default="vdma",
                         help="which engine feeds the display, matching the "
-                             "bitstream. vdma is the one that works; fbread "
-                             "is right in simulation and does not yet fetch "
-                             "a byte on this board")
+                             "bitstream. fbread owns its addressing -- its "
+                             "first beat IS the frame's first pixel -- and "
+                             "has run clean hardware days; vdma is the "
+                             "historic engine, kept until a build retires "
+                             "its read side")
     parser.add_argument("--skew", type=int, default=0,
                         help="the write engine's data lags its own "
                              "start-of-frame by a number of beats that is "
@@ -114,8 +116,8 @@ def main() -> int:
         # WRITE engine's half remains (the VDMA s2mm lands frames at
         # a per-lock offset; 48 px measured 2026-08-19, from the
         # same 0/16/48/80 family as ever). So --skew survives here,
-        # applied to the base address, until #32's fbwrite owns the
-        # write side the way fbread now owns the read.
+        # applied to the base address, until an fbwrite of the same
+        # kind owns the write side the way fbread now owns the read.
         ctrl.write(0x8, fb.physical_address + args.skew * 4)
     else:
         # The VDMA's data lags its own start-of-frame marker by a number
@@ -167,7 +169,8 @@ def main() -> int:
         time.sleep(0.01)
         ctrl.write(0, cbase | 0x4)
 
-        # THE ROTATION, in software until #32 publishes it in fabric:
+        # THE ROTATION, in software until the write engine can
+        # publish it in fabric:
         # fbread must read the buffer the writer FINISHED LAST, never
         # the one being written -- a fixed base met the cycling writer
         # once per three frames, a 10 Hz flicker photographed
@@ -177,7 +180,7 @@ def main() -> int:
         # a mid-frame write here lands cleanly on the next frame.
         # A 5 ms poll is three chances per source frame -- and this
         # thread is exactly the kind of software-in-the-loop that
-        # #32's fbwrite exists to retire, labelled as such.
+        # a fabric fbwrite exists to retire, labelled as such.
         import os
         import threading
 
@@ -316,7 +319,7 @@ def main() -> int:
             # framing hiccup (SOFLateErr at a mid-frame unplug) never
             # restarts itself, so the link would heal and the picture
             # would stay frozen forever. The real fix retires the
-            # engine (#20/#39); until then a halted writer is cleared
+            # engine outright; until then a halted writer is cleared
             # and re-armed -- only while the link is up, at most once a
             # second, and COUNTED, because a restart happening often
             # enough to matter is a bug report, not a recovery.

@@ -88,20 +88,22 @@ into three pipeline stages where the filmed build used four. Both are
 twin-verified bit-exact against the same NumPy models and both close --
 the pixels are the same, the schedule is not.
 
-### After the build: measure the scanout skew
+### After the build: measure the write-side skew
 
-One number must be measured, and it is measured PER LOCK -- not per
-bitstream, which is what this file used to claim. The read engine's data
-lags its own start-of-frame marker, and where the two meet is decided
-when the link comes up. Reloading the bitstream re-rolls it. So does the
-source disappearing and returning. Values seen on one unchanged
-bitstream: 0, 16, 48, 80.
+One number may need measuring, and it is measured PER LOCK -- not per
+bitstream, which is what this file used to claim. The displacement
+seen on a screen was always the SUM of two rolls. The read half -- a
+read engine whose start-of-frame marker travels ahead of its data --
+is gone: `fbread` owns its addressing, so its first beat IS the
+frame's first pixel. The write half remains: the write engine lands
+each frame at an offset decided when the link comes up (values seen
+on one unchanged bitstream: 0, 16, 48, 80), and `--skew` corrects it
+at the framebuffer base address. Reloading the bitstream re-rolls it.
+So does the source disappearing and returning.
 
-That has a practical consequence: do not bisect it by reloading, because
-every reload measures a different system. Measure once, correct once,
-and correct it LIVE -- rewriting the read engine's start addresses and
-then its VSIZE (which is what commits them) moves the picture without
-disturbing the lock.
+That has a practical consequence: do not bisect it by reloading,
+because every reload measures a different system. Measure once,
+correct once on the `isp.py` command line.
 
 Use `scripts/mkpattern.py` to author a ruler AT YOUR PIPELINE'S OWN
 DEPTH; the built-in bayerlink patterns are 12-bit and a 10-bit ISP will
@@ -115,8 +117,8 @@ python3 isp.py --bit rx.bit --skew 352
 ```
 
 A capture card makes this a measurement; a TV and a careful eye make it
-an estimate. The whole compensation disappears when scanout gains its
-own framebuffer reader and the vendor DMA goes.
+an estimate. The remaining half of the compensation disappears when a
+fabric write engine owns the write side the way `fbread` owns the read.
 
 Any Vivado from 2025.2 works, containerized included (if yours crashes
 after "Routing Is Done", see the ledger: it is not your design).
@@ -173,13 +175,14 @@ capacity only; `gen/receiver.py` takes no width and no depth.
 
 ## The loopback
 
-The display side closes the loop on one board: a raster generator of
-our own (`hdl/vid_push.v` — the header-parsing receiver's counterpart:
-it OWNS the 720p timing and pops one framebuffer pixel per active
-clock) drives Digilent's rgb2dvi on HDMI OUT, fed by a VDMA
-framebuffer. `scripts/display.py` runs the gray demo: camera in on
-one HDMI, a one-block ISP on the ARM (shift to 8 bits, gray), live
-picture out the other HDMI.
+The display side closes the loop on one board: np2hw's scanout — a
+raster generator emitted from the one mode table, the header-parsing
+receiver's counterpart — drives Digilent's rgb2dvi on HDMI OUT, fed
+from a framebuffer in DDR. It arrives with the claims this bench paid
+for: a frame may be dropped but never displaced, a window that does
+not fit is refused rather than clipped, and pixel and enable leave
+together. `scripts/isp.py` runs the loop: camera in on one HDMI, the
+revela pipeline in fabric, live picture out the other HDMI.
 
 The ARM block was a placeholder, and it has been replaced: `gen/isp.py`
 composes a revela pipeline -- black level, white balance, bilinear
