@@ -14,6 +14,7 @@ add_files [file join $root hdl generated scanout.v] \
     [file join $root hdl generated fbread.v] [file join $root hdl link_reset.v] [file join $root hdl stream_switch.v] [file join $root hdl axis_unpack.v] \
     [file join $root hdl isp_axis.v] [file join $root hdl generated revela_isp.v] \
     [file join $root hdl generated isp_tee.v] [file join $root hdl generated isp_skid.v] [file join $root hdl tee_shim.v] [file join $root hdl axis_pick.v] \
+    [file join $root hdl generated ddc_slave.v] [file join $root hdl ddc_phy.v] \
     [file join $root hdl generated bayerlink_rx.v] \
     [file join $root hdl rx_axis.v] [file join $root hdl vid_probe.v] \
     [file join $root hdl axis_spy.v]
@@ -45,12 +46,15 @@ set dvi [create_bd_cell -type ip -vlnv digilentinc.com:ip:dvi2rgb dvi_rx]
 # mode with range 1 -- the IP comment's bucket arithmetic says 2, and
 # empirically range 2 locks the clock but never aligns the data. Trust
 # the design that demonstrably receives.
-set_property -dict [list CONFIG.kClkRange {1} CONFIG.kEdidFileName {dgl_720p_cea.data} \
+# DDC no longer belongs to dvi2rgb: the receiver answers for itself.
+# Its canned EDID was a borrowed 720p monitor identity; the ddc_slave
+# below serves our OWN EDID (preferred timing = the container,
+# 1920x1081@30) at 0x50 and the ISP's register file at 0x37, on the
+# same two wires. One engine, and the cable becomes the control plane.
+set_property -dict [list CONFIG.kClkRange {1} CONFIG.kEmulateDDC {false} \
     CONFIG.kAddBUFG {true}] $dvi
 make_bd_intf_pins_external [get_bd_intf_pins dvi_rx/TMDS]
 set_property name TMDS [get_bd_intf_ports TMDS_0]
-make_bd_intf_pins_external [get_bd_intf_pins dvi_rx/DDC]
-set_property name ddc [get_bd_intf_ports DDC_0]
 connect_bd_net [get_bd_pins ps7/FCLK_CLK1] [get_bd_pins dvi_rx/RefClk]
 
 # HPD high: the Pi must see a sink.
@@ -385,7 +389,7 @@ set_property -dict [list CONFIG.C_GPIO_WIDTH {5} CONFIG.C_ALL_OUTPUTS {1} \
     CONFIG.C_ALL_OUTPUTS_2 {1}] $ctrl
 # Bit 0 is the broom, bit 1 selects the stream's consumer (judge/ISP).
 set brm [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice broom]
-set_property -dict [list CONFIG.DIN_WIDTH {3} CONFIG.DIN_FROM {0} \
+set_property -dict [list CONFIG.DIN_WIDTH {5} CONFIG.DIN_FROM {0} \
     CONFIG.DIN_TO {0}] $brm
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins broom/Din]
 # The tee's enables: quasi-static software bits, sampled by the tee at
@@ -409,7 +413,7 @@ connect_bd_net [get_bd_pins ctrl_gpio/gpio2_io_o] [get_bd_pins fbread/base_addr]
 # the new, and an engine pointed at neither. Write, then enable, is
 # the handshake; fbread synchronises this bit on its side.
 set fbsel [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice fb_en]
-set_property -dict [list CONFIG.DIN_WIDTH {3} CONFIG.DIN_FROM {2} \
+set_property -dict [list CONFIG.DIN_WIDTH {5} CONFIG.DIN_FROM {2} \
     CONFIG.DIN_TO {2}] $fbsel
 connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins fb_en/Din]
 connect_bd_net [get_bd_pins fb_en/Dout] [get_bd_pins fbread/enable]
@@ -435,7 +439,7 @@ connect_bd_net [get_bd_pins broom/Dout]         [get_bd_pins link_rst/soft_rst]
 # broom, is unaffected and keeps its meaning either way.
 if {$capture} {
     set msel [create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice isp_sel]
-    set_property -dict [list CONFIG.DIN_WIDTH {3} CONFIG.DIN_FROM {1} \
+    set_property -dict [list CONFIG.DIN_WIDTH {5} CONFIG.DIN_FROM {1} \
         CONFIG.DIN_TO {1}] $msel
     connect_bd_net [get_bd_pins ctrl_gpio/gpio_io_o] [get_bd_pins isp_sel/Din]
     connect_bd_net [get_bd_pins isp_sel/Dout] [get_bd_pins sw/sel]
@@ -697,7 +701,47 @@ if {$control_en} {
  pull would hold the bus port in reset and hang the processor"
         }
     }
-        [get_bd_pins isp_bus_cdc/s_axi_aresetn]
+
+    # --- the DDC slave: the register file, reachable over the cable.
+    # A second master wants isp/s_axi, so a 2x1 interconnect goes in
+    # front of it -- single-clock (everything here lives on the bus
+    # clock) and single-reset (the bus's own; the coupler IS the path,
+    # and a held coupler hangs exactly like a held slave). Wired
+    # explicitly, nothing left for automation to guess.
+    set dphy [create_bd_cell -type module -reference ddc_phy ddc_phy]
+    set dslv [create_bd_cell -type module -reference ddc_slave ddc]
+    connect_bd_net [get_bd_pins ddc_phy/scl_i] [get_bd_pins ddc/scl_i]
+    connect_bd_net [get_bd_pins ddc_phy/sda_i] [get_bd_pins ddc/sda_i]
+    connect_bd_net [get_bd_pins ddc/sda_pull] [get_bd_pins ddc_phy/sda_pull]
+    connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins ddc/clk]
+    # rst is declared ACTIVE_HIGH at its owner; peripheral_reset is
+    # the matching output of the bus's generator.
+    connect_bd_net [get_bd_pins rst_bus/peripheral_reset] [get_bd_pins ddc/rst]
+    create_bd_port -dir I ddc_scl_io
+    connect_bd_net [get_bd_ports ddc_scl_io] [get_bd_pins ddc_phy/scl_io]
+    create_bd_port -dir IO ddc_sda_io
+    connect_bd_net [get_bd_ports ddc_sda_io] [get_bd_pins ddc_phy/sda_io]
+
+    set ispnet [get_bd_intf_nets -of_objects [get_bd_intf_pins isp/s_axi]]
+    set mpin ""
+    foreach ip [get_bd_intf_pins -of_objects $ispnet] {
+        if {$ip ne [get_bd_intf_pins isp/s_axi]} { set mpin $ip }
+    }
+    if {$mpin eq ""} { error "bd.tcl: no master found feeding isp/s_axi" }
+    delete_bd_objs $ispnet
+    set icd [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect ic_ddc]
+    set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1}] $icd
+    connect_bd_intf_net $mpin [get_bd_intf_pins ic_ddc/S00_AXI]
+    connect_bd_intf_net [get_bd_intf_pins ddc/M_AXI] [get_bd_intf_pins ic_ddc/S01_AXI]
+    connect_bd_intf_net [get_bd_intf_pins ic_ddc/M00_AXI] [get_bd_intf_pins isp/s_axi]
+    foreach c {ACLK S00_ACLK S01_ACLK M00_ACLK} {
+        connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins ic_ddc/$c]
+    }
+    foreach r {ARESETN S00_ARESETN S01_ARESETN M00_ARESETN} {
+        connect_bd_net -net $busnet [get_bd_pins ic_ddc/$r]
+    }
+    assign_bd_address -target_address_space /ddc/M_AXI \
+        [get_bd_addr_segs isp/s_axi/reg0] -offset 0x00000000 -range 32K
 }
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
@@ -748,11 +792,21 @@ if {$fbread_en} {
 # unambiguously "not asserted", and this generator releases after its
 # power-on sequence instead of possibly never.
 if {$fbread_en} {
-    # This reset generator only exists when fbread is the master: the
-    # automation makes one for the display clock domain, and with the
-    # VDMA driving HP1 there is no such domain to make it for.
-    set_property -dict [list CONFIG.C_EXT_RST_ACTIVE_HIGH {1} \
-        CONFIG.C_AUX_RST_ACTIVE_HIGH {1}] [get_bd_cells rst_clk_out_148M]
+    # A relic with a live lesson: before the one-clock move, fbread's
+    # display clock was a domain the automation had not seen, so it
+    # generated a reset for it -- whose unstated polarity was the
+    # island-held-in-reset bug's cousin, fixed here by declaration.
+    # With everything on the board's one clock the automation reuses
+    # the existing resets and generates NOTHING, so the cell to fix
+    # may not exist -- and an audit that errors on its absence would
+    # refuse exactly the builds that no longer have the problem.
+    set rc [get_bd_cells -quiet rst_clk_out_148M]
+    if {$rc ne ""} {
+        set_property -dict [list CONFIG.C_EXT_RST_ACTIVE_HIGH {1} \
+            CONFIG.C_AUX_RST_ACTIVE_HIGH {1}] $rc
+    } else {
+        puts "bd.tcl: no automation reset generator to repair (one clock)"
+    }
 }
 if {$capture} {
 connect_bd_intf_net [get_bd_intf_pins dma/M_AXI_S2MM] \
@@ -802,25 +856,25 @@ if {$capture} {
 # picture path is the board's, the source is the cable's. So the broom,
 # not link_rst.
 connect_bd_net [get_bd_pins broom/Dout] [get_bd_pins scanout/rst]
-# fbread's reset is wired HERE, from the broom, and deliberately not by
-# the AXI automation. The automation connects whatever its generated
-# proc_sys_reset produces, and whether that block is holding cannot be
-# read back from a build log or from software -- which is how an engine
-# came to sit in reset for three builds while every register a host can
-# see said it should be running. The broom is a signal whose state is
-# readable, and it already resets the scanout on this same clock.
+# fbread's reset: the BUS's own (rst_bus), wired explicitly -- the
+# same reset as every other thing a host reaches on this clock, whose
+# state is readable and which releases at boot and never again. Two
+# earlier designs each carried half a lesson: the automation's hidden
+# proc_sys_reset held the engine for three builds with nothing a host
+# could read saying so; and the broom -- readable, but pulsed by
+# software at every resync -- would land mid-burst on a bus MASTER
+# and leave the interconnect holding a transaction nobody finishes.
+# A bus master is stopped by its enable, which drains at a frame
+# boundary; its reset is for power-on, and belongs to the bus.
 if {$fbread_en} {
-    set fbrstn [create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic fb_rstn]
-    set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] $fbrstn
-    connect_bd_net [get_bd_pins broom/Dout]  [get_bd_pins fb_rstn/Op1]
-    connect_bd_net [get_bd_pins fb_rstn/Res] [get_bd_pins fbread/rst_n]
+    if {!$control_en} {
+        error "bd.tcl: FBREAD=1 requires CONTROL=1 -- the engine's reset\
+ is the bus's (rst_bus), which the control build creates. A baked build\
+ has no bus domain to borrow it from."
+    }
+    connect_bd_net [get_bd_pins rst_bus/peripheral_aresetn] \
+        [get_bd_pins fbread/rst_n]
 }
-# fbread's reset is NOT connected here. Its port declares
-# ASSOCIATED_RESET, so the AXI automation gives it the interconnect's
-# own peripheral reset -- which is the right source for a bus master:
-# a broom pulse landing mid-burst would leave the interconnect holding
-# a transaction nobody will finish. It is stopped instead by taking its
-# base address away, which is also how it is started.
 # The prover's reset recipe, kept verbatim: rgb2dvi held in reset by
 # nothing but the pixel MMCM's own lock.
 set lockinv [create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic lock_inv]

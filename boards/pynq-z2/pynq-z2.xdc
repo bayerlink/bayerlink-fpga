@@ -10,8 +10,11 @@ set_property -dict { PACKAGE_PIN T20 IOSTANDARD TMDS_33 } [get_ports {TMDS_data_
 set_property -dict { PACKAGE_PIN U20 IOSTANDARD TMDS_33 } [get_ports {TMDS_data_n[1]}]
 set_property -dict { PACKAGE_PIN N20 IOSTANDARD TMDS_33 } [get_ports {TMDS_data_p[2]}]
 set_property -dict { PACKAGE_PIN P20 IOSTANDARD TMDS_33 } [get_ports {TMDS_data_n[2]}]
-set_property -dict { PACKAGE_PIN U14 IOSTANDARD LVCMOS33 } [get_ports ddc_scl_io]
-set_property -dict { PACKAGE_PIN U15 IOSTANDARD LVCMOS33 } [get_ports ddc_sda_io]
+# DDC: served by ddc_slave now (EDID + registers), not dvi2rgb. The
+# real pull-ups are the source's (the Pi carries them); the weak
+# internal ones only keep the bus from floating with no cable in.
+set_property -dict { PACKAGE_PIN U14 IOSTANDARD LVCMOS33 PULLUP true } [get_ports ddc_scl_io]
+set_property -dict { PACKAGE_PIN U15 IOSTANDARD LVCMOS33 PULLUP true } [get_ports ddc_sda_io]
 set_property -dict { PACKAGE_PIN T19 IOSTANDARD LVCMOS33 } [get_ports hdmi_hpd]
 ## 148.5 MHz: the frontend is CONSTRAINED for its fastest legal link
 ## (1080p), as the board's base overlay does; slower actual links (our

@@ -33,7 +33,13 @@ MODE=${MODE:-1080p60}
 W=${W:-1920}
 H=${H:-1080}
 BITS=${BITS:-10}
-ISP_MHZ=${ISP_MHZ:-148.5}
+# 155, not 148.5: cutting for a few MHz more than the clock will run
+# is what makes the cut placement DETERMINISTIC -- at exactly 148.5
+# the estimator's 70ps of optimism decided whether a register moved,
+# and builds swung +0.16 to -0.54 on nothing. Generation margin, the
+# same idea as timing margin, one stage earlier. (Measured: +0.196
+# MET, repeatably, on the build this default comes from.)
+ISP_MHZ=${ISP_MHZ:-155}
 RX_FIFO=${RX_FIFO:-256}
 # Include the bring-up capture path? It writes received frames to DDR
 # so the ARM can judge them against what the camera sent -- the tap
@@ -91,6 +97,8 @@ python3 gen/scanout.py --mode "$MODE" --window "${W}x${H}"
 
 echo "== output tee (np2hw)"
 python3 gen/tee.py
+python3 gen/ddc.py
+python3 gen/fbread.py
 
 echo "== implementation"
 cd "boards/$BOARD"
