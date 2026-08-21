@@ -16,7 +16,8 @@
 # link's own pixel clock (148.5 for 1080p): the ISP rides the
 # receiver's domain, so a lower number here would silently ask the
 # generator for a pipeline too slow for the pixels arriving.
-#   MODE=720p60 W=1280 H=720 ./build.sh
+#   MODE=720p60 ./build.sh                (raster only; the ISP's
+#                                            geometry is the design's)
 #
 # Needs: vivado on PATH, and the generators, PINNED:
 #
@@ -34,9 +35,10 @@ BOARD=${BOARD:-pynq-z2}
 # direct-to-glass is whole. 148.5-class modes (1080p60) free-run --
 # the store path shows each frame twice, as a standard TV signal.
 MODE=${MODE:-1080p30}
-W=${W:-1920}
-H=${H:-1080}
-BITS=${BITS:-10}
+# The ISP's geometry and depth belong to the DESIGN (gen/pipeline.json
+# owns them); the receiver aligns samples to that depth, so BITS is
+# READ from the description, never chosen here.
+BITS=$(python3 -c 'import json; print(json.load(open("gen/pipeline.json"))["stream"]["bit_depth"])')
 # 155, not 148.5: cutting for a few MHz more than the clock will run
 # is what makes the cut placement DETERMINISTIC -- at exactly 148.5
 # the estimator's 70ps of optimism decided whether a register moved,
@@ -56,11 +58,6 @@ RX_FIFO=${RX_FIFO:-256}
 # the consumer switch, and the thinnest timing path in the design.
 # Whether the board CAN is the board's to say, below.
 CAPTURE=${CAPTURE:-0}
-# Coefficients baked into the bitstream (0) or written over AXI4-Lite
-# (1). The ISP's ports differ, so this one flag drives both the
-# generator and the block design; they cannot disagree. Live is the
-# default: the display reader's reset belongs to the bus this creates.
-CONTROL=${CONTROL:-1}
 
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here"
@@ -93,9 +90,8 @@ python3 gen/receiver.py --board "$BOARD" --fifo-depth "$RX_FIFO" \
     --bits "$BITS"
 
 echo "== ISP (revela pipeline, twin-verified before it emits)"
-python3 gen/isp.py --width "$W" --height "$H" --bits "$BITS" \
-    ${CONTROL:+$([ "$CONTROL" = 1 ] && echo --control)} \
-    --clock-mhz "$ISP_MHZ"
+python3 -m revela generate gen/pipeline.json \
+    --out hdl/generated --clock-mhz "$ISP_MHZ"
 
 echo "== display raster (np2hw scanout)"
 # The mode table is the one owner: the raster's pixel clock comes from
@@ -117,7 +113,7 @@ cd "boards/$BOARD"
 # Both build-time choices reach the block design the same way: the
 # sample width for the glue's parameter, and whether to build the
 # capture branch at all.
-export BITS CAPTURE CONTROL
+export BITS CAPTURE
 vivado -mode batch -source bd.tcl
 vivado -mode batch -source impl_a.tcl
 vivado -mode batch -source impl_b.tcl

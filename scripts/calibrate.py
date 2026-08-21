@@ -13,7 +13,7 @@ where, the profile answers what, the commit lands it at a frame
 boundary.
 
     python3 calibrate.py --bit rx.bit \
-        --map revela_isp.regmap.json --values profile.json
+        --map revela_isp_core_regmap.json --values profile.json
 """
 import argparse
 import json
@@ -27,7 +27,7 @@ from pynq import Overlay, MMIO
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bit", default="rx.bit")
-    parser.add_argument("--map", default="revela_isp.regmap.json")
+    parser.add_argument("--map", default="revela_isp_core_regmap.json")
     parser.add_argument("--values", default="revela_isp.defaults.json")
     args = parser.parse_args()
 

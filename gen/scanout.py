@@ -10,9 +10,9 @@ be dropped, never displaced; a window that does not fit is refused, not
 clipped; pixel and enable leave together.
 
 Placement is a run-time fact and arrives on registers. This build bakes
-it in a wrapper, exactly as gen/isp.py bakes the ISP's parameters,
-because the register file is designed and not yet built. When it lands,
-the wrapper is deleted rather than rewritten.
+it in a wrapper, because scanout's register file is not yet built (the
+ISP's is, and its baked wrapper is gone). When it lands, the wrapper is
+deleted rather than rewritten.
 
     python3 gen/scanout.py --mode 1080p60 --window 1920x1080
 """

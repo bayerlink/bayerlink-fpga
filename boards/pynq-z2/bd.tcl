@@ -13,7 +13,8 @@ update_ip_catalog
 add_files [file join $root hdl generated scanout.v] \
     [file join $root hdl generated grab_fifo.v] \
     [file join $root hdl link_reset.v] [file join $root hdl stream_switch.v] [file join $root hdl axis_unpack.v] \
-    [file join $root hdl isp_axis.v] [file join $root hdl generated revela_isp.v] \
+    [file join $root hdl isp_axis.v] [file join $root hdl isp_shim.v] \
+    [file join $root hdl generated revela_isp_core.v] \
     [file join $root hdl generated isp_tee.v] [file join $root hdl generated isp_skid.v] [file join $root hdl tee_shim.v] [file join $root hdl axis_pick.v] \
     [file join $root hdl generated ddc_slave.v] [file join $root hdl ddc_phy.v] \
     [file join $root hdl generated bayerlink_rx.v] \
@@ -114,14 +115,12 @@ set genlock_en [expr {$out_mhz < 100}]
 if {$genlock_en} {
     add_files -fileset constrs_1 [file join $here genlock-clocks.xdc]
 }
-# BAKED or LIVE coefficients. 0 bakes them into the wrapper, which is
-# the demo that has a picture behind it; 1 brings up np2hw's AXI4-Lite
-# register file, whose writes land in a shadow and commit at a frame
-# boundary. The ISP's ports differ between the two, so the bitstream and
-# gen/isp.py --control must agree -- build.sh passes the same flag to
-# both.
-set control_en [expr {[info exists ::env(CONTROL)] ? $::env(CONTROL) : 0}]
-puts "bd.tcl: output $out_mhz MHz[expr {$genlock_en ? { genlocked} : {}}], coefficients = [expr {$control_en ? {live} : {baked}}]"
+# Coefficients are LIVE, always: np2hw's AXI4-Lite register file,
+# whose writes land in a shadow and commit at a frame boundary. The
+# baked-constants variant retired once this path was proven -- the
+# operating model is NEUTRAL at power-on, calibration restored over
+# the cable by whoever holds the sensor's profile.
+puts "bd.tcl: output $out_mhz MHz[expr {$genlock_en ? { genlocked} : {}}], coefficients live"
 puts "bd.tcl: sample width $sample_bits bits, capture path $capture"
 set rx [create_bd_cell -type module -reference bayerlink_rx blrx]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk] [get_bd_pins blrx/clk]
@@ -676,118 +675,116 @@ apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
     [get_bd_intf_pins hdr_gpio/S_AXI]
-if {$control_en} {
-    # Every coefficient behind one slave, ON THE PROCESSOR'S CLOCK.
-    #
-    # It rode the PIXEL clock once. That clock is recovered from the
-    # HDMI link and stops with it, including in the moments just after
-    # this bitstream is loaded -- and AXI has no timeout, so a slave
-    # with no clock never answers and the processor waits for it
-    # forever. The board hung on 2026-08-17 and needed the power pulled.
-    #
-    # Clk_slave is NAMED rather than left to Auto. Auto picked the pixel
-    # clock, correctly, because the wrapper's interface association said
-    # that is where the port lived; the fix is in the wrapper, and this
-    # says the same thing out loud so the two cannot drift apart.
-    # Master and slave on one clock also means no clock converter.
-    # ...and on the ISLAND's clock, which is the whole point: the
-    # register file and the datapath that reads it share a domain, so
-    # the coefficient crossing that needed an arm for safety and false
-    # paths in both directions simply does not exist.
-    #
-    # But NOT the island's RESET. The island follows the link; the bus
-    # must not. The first build of this let the automation choose the
-    # crossing's reset, and it grabbed the only proc_sys_reset in the
-    # domain -- rst_isp, the link's -- so a cable pull held the
-    # register file's arready at zero and the next read of 0x40000000
-    # hung the processor. The same lesson as the pixel-clocked slave,
-    # one level up: last time a CLOCK that stopped with the cable,
-    # this time a RESET held by it. Anything a host can reach must
-    # answer, and that means its clock AND its reset answer to the
-    # board, not to the cable.
-    #
-    # So nothing here is left for the automation to guess: the bus
-    # gets its own reset (rst_bus -- released once the PS is up and
-    # the MMCM locks, deliberately blind to the link), and the clock
-    # converter is placed EXPLICITLY, every clock and reset named.
-    # The automation is only ever handed the FCLK0 side, where there
-    # is nothing cross-domain left to decide.
-    connect_bd_net [get_bd_pins $islck]   [get_bd_pins isp/s_axi_aclk]
-    # The regfile's reset pin is CONNECTED BEFORE the automation runs,
-    # because a pin already taken is a pin the automation leaves alone.
-    connect_bd_net [get_bd_pins rst_bus/peripheral_aresetn] [get_bd_pins isp/s_axi_aresetn]
-    apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
-        [expr {$genlock_en
-            ? {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/ps7/FCLK_CLK0} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}}
-            : {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/clk_out/clk_out1} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}}}] \
-        [get_bd_intf_pins isp/s_axi]
-    # ...and then its choices are REPAIRED, because the automation also
-    # picks a reset for the interconnect port it creates in the island
-    # clock domain, and it picks whatever proc_sys_reset it likes the
-    # look of. The wedging build had M03_ARESETN on rst_isp: the
-    # crossing coupler itself held in reset by the link, so even a
-    # regfile with a sound reset sat behind a dead port. Every pin the
-    # automation put on the link's reset moves to the bus's, and the
-    # build REFUSES if any survives -- this is a correctness invariant,
-    # not a preference.
-    set busnet [get_bd_nets -of_objects [get_bd_pins rst_bus/peripheral_aresetn]]
-    foreach pin [get_bd_pins -quiet ps7_axi_periph/*ARESETN*] {
-        set n [get_bd_nets -quiet -of_objects $pin]
-        if {$n ne "" && [string match "*rst_isp*" [get_property NAME $n]]} {
-            disconnect_bd_net $n $pin
-            connect_bd_net -net $busnet $pin
-            puts "bd.tcl: moved $pin off the link's reset"
-        }
+# Every coefficient behind one slave, ON THE PROCESSOR'S CLOCK.
+#
+# It rode the PIXEL clock once. That clock is recovered from the
+# HDMI link and stops with it, including in the moments just after
+# this bitstream is loaded -- and AXI has no timeout, so a slave
+# with no clock never answers and the processor waits for it
+# forever. The board hung on 2026-08-17 and needed the power pulled.
+#
+# Clk_slave is NAMED rather than left to Auto. Auto picked the pixel
+# clock, correctly, because the wrapper's interface association said
+# that is where the port lived; the fix is in the wrapper, and this
+# says the same thing out loud so the two cannot drift apart.
+# Master and slave on one clock also means no clock converter.
+# ...and on the ISLAND's clock, which is the whole point: the
+# register file and the datapath that reads it share a domain, so
+# the coefficient crossing that needed an arm for safety and false
+# paths in both directions simply does not exist.
+#
+# But NOT the island's RESET. The island follows the link; the bus
+# must not. The first build of this let the automation choose the
+# crossing's reset, and it grabbed the only proc_sys_reset in the
+# domain -- rst_isp, the link's -- so a cable pull held the
+# register file's arready at zero and the next read of 0x40000000
+# hung the processor. The same lesson as the pixel-clocked slave,
+# one level up: last time a CLOCK that stopped with the cable,
+# this time a RESET held by it. Anything a host can reach must
+# answer, and that means its clock AND its reset answer to the
+# board, not to the cable.
+#
+# So nothing here is left for the automation to guess: the bus
+# gets its own reset (rst_bus -- released once the PS is up and
+# the MMCM locks, deliberately blind to the link), and the clock
+# converter is placed EXPLICITLY, every clock and reset named.
+# The automation is only ever handed the FCLK0 side, where there
+# is nothing cross-domain left to decide.
+connect_bd_net [get_bd_pins $islck]   [get_bd_pins isp/s_axi_aclk]
+# The regfile's reset pin is CONNECTED BEFORE the automation runs,
+# because a pin already taken is a pin the automation leaves alone.
+connect_bd_net [get_bd_pins rst_bus/peripheral_aresetn] [get_bd_pins isp/s_axi_aresetn]
+apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
+    [expr {$genlock_en
+        ? {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/ps7/FCLK_CLK0} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}}
+        : {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/clk_out/clk_out1} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}}}] \
+    [get_bd_intf_pins isp/s_axi]
+# ...and then its choices are REPAIRED, because the automation also
+# picks a reset for the interconnect port it creates in the island
+# clock domain, and it picks whatever proc_sys_reset it likes the
+# look of. The wedging build had M03_ARESETN on rst_isp: the
+# crossing coupler itself held in reset by the link, so even a
+# regfile with a sound reset sat behind a dead port. Every pin the
+# automation put on the link's reset moves to the bus's, and the
+# build REFUSES if any survives -- this is a correctness invariant,
+# not a preference.
+set busnet [get_bd_nets -of_objects [get_bd_pins rst_bus/peripheral_aresetn]]
+foreach pin [get_bd_pins -quiet ps7_axi_periph/*ARESETN*] {
+    set n [get_bd_nets -quiet -of_objects $pin]
+    if {$n ne "" && [string match "*rst_isp*" [get_property NAME $n]]} {
+        disconnect_bd_net $n $pin
+        connect_bd_net -net $busnet $pin
+        puts "bd.tcl: moved $pin off the link's reset"
     }
-    foreach pin [get_bd_pins -quiet ps7_axi_periph/*ARESETN*] {
-        set n [get_bd_nets -quiet -of_objects $pin]
-        if {$n ne "" && [string match "*rst_isp*" [get_property NAME $n]]} {
-            error "bd.tcl: $pin still rides the link's reset -- a cable\
- pull would hold the bus port in reset and hang the processor"
-        }
-    }
-
-    # --- the DDC slave: the register file, reachable over the cable.
-    # A second master wants isp/s_axi, so a 2x1 interconnect goes in
-    # front of it -- single-clock (everything here lives on the bus
-    # clock) and single-reset (the bus's own; the coupler IS the path,
-    # and a held coupler hangs exactly like a held slave). Wired
-    # explicitly, nothing left for automation to guess.
-    set dphy [create_bd_cell -type module -reference ddc_phy ddc_phy]
-    set dslv [create_bd_cell -type module -reference ddc_slave ddc]
-    connect_bd_net [get_bd_pins ddc_phy/scl_i] [get_bd_pins ddc/scl_i]
-    connect_bd_net [get_bd_pins ddc_phy/sda_i] [get_bd_pins ddc/sda_i]
-    connect_bd_net [get_bd_pins ddc/sda_pull] [get_bd_pins ddc_phy/sda_pull]
-    connect_bd_net [get_bd_pins $islck] [get_bd_pins ddc/clk]
-    # rst is declared ACTIVE_HIGH at its owner; peripheral_reset is
-    # the matching output of the bus's generator.
-    connect_bd_net [get_bd_pins rst_bus/peripheral_reset] [get_bd_pins ddc/rst]
-    create_bd_port -dir I ddc_scl_io
-    connect_bd_net [get_bd_ports ddc_scl_io] [get_bd_pins ddc_phy/scl_io]
-    create_bd_port -dir IO ddc_sda_io
-    connect_bd_net [get_bd_ports ddc_sda_io] [get_bd_pins ddc_phy/sda_io]
-
-    set ispnet [get_bd_intf_nets -of_objects [get_bd_intf_pins isp/s_axi]]
-    set mpin ""
-    foreach ip [get_bd_intf_pins -of_objects $ispnet] {
-        if {$ip ne [get_bd_intf_pins isp/s_axi]} { set mpin $ip }
-    }
-    if {$mpin eq ""} { error "bd.tcl: no master found feeding isp/s_axi" }
-    delete_bd_objs $ispnet
-    set icd [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect ic_ddc]
-    set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1}] $icd
-    connect_bd_intf_net $mpin [get_bd_intf_pins ic_ddc/S00_AXI]
-    connect_bd_intf_net [get_bd_intf_pins ddc/M_AXI] [get_bd_intf_pins ic_ddc/S01_AXI]
-    connect_bd_intf_net [get_bd_intf_pins ic_ddc/M00_AXI] [get_bd_intf_pins isp/s_axi]
-    foreach c {ACLK S00_ACLK S01_ACLK M00_ACLK} {
-        connect_bd_net [get_bd_pins $islck] [get_bd_pins ic_ddc/$c]
-    }
-    foreach r {ARESETN S00_ARESETN S01_ARESETN M00_ARESETN} {
-        connect_bd_net -net $busnet [get_bd_pins ic_ddc/$r]
-    }
-    assign_bd_address -target_address_space /ddc/M_AXI \
-        [get_bd_addr_segs isp/s_axi/reg0] -offset 0x00000000 -range 32K
 }
+foreach pin [get_bd_pins -quiet ps7_axi_periph/*ARESETN*] {
+    set n [get_bd_nets -quiet -of_objects $pin]
+    if {$n ne "" && [string match "*rst_isp*" [get_property NAME $n]]} {
+        error "bd.tcl: $pin still rides the link's reset -- a cable\
+ pull would hold the bus port in reset and hang the processor"
+    }
+}
+
+# --- the DDC slave: the register file, reachable over the cable.
+# A second master wants isp/s_axi, so a 2x1 interconnect goes in
+# front of it -- single-clock (everything here lives on the bus
+# clock) and single-reset (the bus's own; the coupler IS the path,
+# and a held coupler hangs exactly like a held slave). Wired
+# explicitly, nothing left for automation to guess.
+set dphy [create_bd_cell -type module -reference ddc_phy ddc_phy]
+set dslv [create_bd_cell -type module -reference ddc_slave ddc]
+connect_bd_net [get_bd_pins ddc_phy/scl_i] [get_bd_pins ddc/scl_i]
+connect_bd_net [get_bd_pins ddc_phy/sda_i] [get_bd_pins ddc/sda_i]
+connect_bd_net [get_bd_pins ddc/sda_pull] [get_bd_pins ddc_phy/sda_pull]
+connect_bd_net [get_bd_pins $islck] [get_bd_pins ddc/clk]
+# rst is declared ACTIVE_HIGH at its owner; peripheral_reset is
+# the matching output of the bus's generator.
+connect_bd_net [get_bd_pins rst_bus/peripheral_reset] [get_bd_pins ddc/rst]
+create_bd_port -dir I ddc_scl_io
+connect_bd_net [get_bd_ports ddc_scl_io] [get_bd_pins ddc_phy/scl_io]
+create_bd_port -dir IO ddc_sda_io
+connect_bd_net [get_bd_ports ddc_sda_io] [get_bd_pins ddc_phy/sda_io]
+
+set ispnet [get_bd_intf_nets -of_objects [get_bd_intf_pins isp/s_axi]]
+set mpin ""
+foreach ip [get_bd_intf_pins -of_objects $ispnet] {
+    if {$ip ne [get_bd_intf_pins isp/s_axi]} { set mpin $ip }
+}
+if {$mpin eq ""} { error "bd.tcl: no master found feeding isp/s_axi" }
+delete_bd_objs $ispnet
+set icd [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect ic_ddc]
+set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1}] $icd
+connect_bd_intf_net $mpin [get_bd_intf_pins ic_ddc/S00_AXI]
+connect_bd_intf_net [get_bd_intf_pins ddc/M_AXI] [get_bd_intf_pins ic_ddc/S01_AXI]
+connect_bd_intf_net [get_bd_intf_pins ic_ddc/M00_AXI] [get_bd_intf_pins isp/s_axi]
+foreach c {ACLK S00_ACLK S01_ACLK M00_ACLK} {
+    connect_bd_net [get_bd_pins $islck] [get_bd_pins ic_ddc/$c]
+}
+foreach r {ARESETN S00_ARESETN S01_ARESETN M00_ARESETN} {
+    connect_bd_net -net $busnet [get_bd_pins ic_ddc/$r]
+}
+assign_bd_address -target_address_space /ddc/M_AXI \
+    [get_bd_addr_segs isp/s_axi/reg0] -offset 0x00000000 -range 32K
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
     [get_bd_intf_pins ctrl_gpio/S_AXI]

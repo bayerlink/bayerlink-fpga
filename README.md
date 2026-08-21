@@ -60,16 +60,21 @@ using a stale one. It runs:
 
 ```sh
 python3 gen/receiver.py --board pynq-z2   # -> hdl/generated/bayerlink_rx.v
-python3 gen/isp.py  --width 1920 --height 1080 --clock-mhz 148.5
+python3 -m revela generate gen/pipeline.json --out hdl/generated --clock-mhz 155
 python3 gen/scanout.py --mode 1080p30 --genlock   # -> hdl/generated/scanout.v
 cd boards/pynq-z2 && vivado -mode batch -source bd.tcl
 vivado -mode batch -source impl_a.tcl
 vivado -mode batch -source impl_b.tcl
 ```
 
-gen/isp.py refuses to emit anything it has not first proved bit-exact
-against its NumPy model under Verilator, so a failed build there is a
-verification failure, not a tool problem.
+The ISP is not scripted here: `gen/pipeline.json` is a revela pipeline
+description -- named block instances and the connections between their
+ports, nothing else -- and revela's generator builds it, proves it
+bit-exact against its own NumPy models under Verilator, and refuses to
+emit anything unverified. A failed build there is a verification
+failure, not a tool problem. What this repo adds is `hdl/isp_shim.v`,
+hand-shaped board glue: the header latch and the AXI4-Lite port,
+wrapped around the pack.
 
 ### Timing margin, and what your build will and will not match
 
@@ -191,14 +196,15 @@ is a set of visitors (`scripts/load.py` once at boot,
 the sensor's owner). `docs/clocking.md` tells the whole
 clocks-and-rates story, end to end.
 
-The ARM block was a placeholder, and it has been replaced: `gen/isp.py`
-composes a revela pipeline -- black level, white balance, bilinear
-demosaic, tone curve -- generates it through np2hw, depth-checks every
-stage against the clock (`--clock-mhz`; a too-deep stage is CUT into
-pipeline stages by the traced depth model, and the one refusal left --
-a single operation deeper than the clock -- names itself), proves the
-composition bit-exact against its own NumPy model under Verilator, and
-only then emits Verilog. The whole ISP closes timing at the link's
+The ARM block was a placeholder, and it has been replaced:
+`gen/pipeline.json` describes a revela pipeline -- black level, white
+balance, Hamilton-Adams demosaic, colour matrix, tone curve -- and
+revela generates it through np2hw, depth-checks every stage against
+the clock (`--clock-mhz`; a too-deep stage is CUT into pipeline stages
+by the traced depth model, and the one refusal left -- a single
+operation deeper than the clock -- names itself), proves the
+composition bit-exact against its own NumPy models under Verilator,
+and only then emits Verilog. The whole ISP closes timing at the link's
 148.5 MHz on the board's own clock. In the fabric it sits between
 the receiver and the output tee; a control bit selects the stream's
 consumer (the judge's capture path, or the ISP), and the ARM has no
