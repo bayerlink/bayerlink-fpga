@@ -45,13 +45,17 @@ BITS=${BITS:-10}
 # MET, repeatably, on the build this default comes from.)
 ISP_MHZ=${ISP_MHZ:-155}
 RX_FIFO=${RX_FIFO:-256}
-# Include the bring-up capture path? It writes received frames to DDR
-# so the ARM can judge them against what the camera sent -- the tap
-# that proved this link bit-exact -- and costs a DMA, a clock
-# converter, an interconnect port and the switch that exists only
-# because there are then two consumers. On for a bench build, off for
-# a demo. Whether the board CAN is the board's to say, below.
-CAPTURE=${CAPTURE:-1}
+# Include the link-judge capture path? It snapshots what ARRIVED at
+# the receiver, byte-exact, to compare against what was sent -- the
+# tap that proved this link bit-exact, and the only tool that can
+# convict a cable, a lane map or a receiver regression (the grabber
+# taps AFTER the ISP and cannot substitute; the sender only ever
+# knows what it sent). Its jobs are episodic -- board ports,
+# receiver regressions, lane-map solving -- so it is OFF by
+# default: it costs a DMA, a clock converter, an interconnect port,
+# the consumer switch, and the thinnest timing path in the design.
+# Whether the board CAN is the board's to say, below.
+CAPTURE=${CAPTURE:-0}
 # Coefficients baked into the bitstream (0) or written over AXI4-Lite
 # (1). The ISP's ports differ, so this one flag drives both the
 # generator and the block design; they cannot disagree. Live is the
