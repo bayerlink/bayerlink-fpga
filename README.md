@@ -102,23 +102,19 @@ at the framebuffer base address. Reloading the bitstream re-rolls it.
 So does the source disappearing and returning.
 
 That has a practical consequence: do not bisect it by reloading,
-because every reload measures a different system. Measure once,
-correct once on the `isp.py` command line.
+because every reload measures a different system. Measure once, and
+compensate where the frames are consumed -- a grabbed frame carries
+the offset; the reader that judges it corrects for it.
 
-Use `scripts/mkpattern.py` to author a ruler AT YOUR PIPELINE'S OWN
-DEPTH; the built-in bayerlink patterns are 12-bit and a 10-bit ISP will
-refuse them, which looks like a geometry fault and is not. Measure it:
-
-```sh
-python3 ruler.py --bit rx.bit          # landmarks on the screen
-# find the magenta column (buffer x=0); if it sits at screen x=N,
-# then --skew is N rounded DOWN to a multiple of 16 (64-byte aligned)
-python3 isp.py --bit rx.bit --skew 352
-```
-
-A capture card makes this a measurement; a TV and a careful eye make it
-an estimate. The remaining half of the compensation disappears when a
-fabric write engine owns the write side the way `fbread` owns the read.
+Measure it with the grabber and a known pattern: stream one of the
+protocol's test patterns from the source (`scripts/mkpattern.py`
+authors one AT YOUR PIPELINE'S OWN DEPTH; the built-in bayerlink
+patterns are 12-bit and a 10-bit ISP will refuse them, which looks
+like a geometry fault and is not), `grab.py` a frame, and read the
+roll off the known landmarks in the file. The display is direct and
+never carries the offset; only grabbed frames do, and the reader
+that judges them rolls it back. The compensation disappears
+entirely when a fabric write engine replaces the vendor one.
 
 Any Vivado from 2025.2 works, containerized included (if yours crashes
 after "Routing Is Done", see the ledger: it is not your design).
@@ -137,7 +133,7 @@ exactly how short it is before you start:
 | PS preset, DDR, HP ports | `boards/<board>/bd.tcl` | your board's preset or the vendor's own file |
 | the lane map | `gen/receiver.py --board` | SOLVED, not guessed: `bayerlink.pattern counting`, then `checker` |
 | the pixel clock | the link, not a choice | it is whatever your source sends |
-| the write-side skew | measured per link lock | the ruler, above |
+| the write-side skew | measured per link lock | the grabbed-pattern recipe, above |
 
 What you do NOT port: the receiver, the ISP and the raster themselves.
 They are generated for your width, depth and video mode, and they are
@@ -187,10 +183,13 @@ raster's geometry never moves — so latency to glass is lines, always:
 there is no frame store in the picture path. Memory is an
 *instrument*: a grabber captures frames to an address software chose,
 for software to judge, and the display never depends on it.
-`scripts/isp.py` runs the loop: camera in on one HDMI, the revela
-pipeline in fabric, live picture out the other HDMI;
-`docs/clocking.md` tells the whole clocks-and-rates story, end to
-end.
+Nothing runs the loop: power-on defaults enable the picture, so a
+board with the bitstream loaded IS the camera's display -- software
+is a set of visitors (`scripts/load.py` once at boot,
+`scripts/status.py` when curious, `scripts/grab.py` to capture,
+`scripts/calibrate.py` until parameters arrive over the cable from
+the sensor's owner). `docs/clocking.md` tells the whole
+clocks-and-rates story, end to end.
 
 The ARM block was a placeholder, and it has been replaced: `gen/isp.py`
 composes a revela pipeline -- black level, white balance, bilinear
@@ -200,13 +199,11 @@ pipeline stages by the traced depth model, and the one refusal left --
 a single operation deeper than the clock -- names itself), proves the
 composition bit-exact against its own NumPy model under Verilator, and
 only then emits Verilog. The whole ISP closes timing at the link's
-148.5 MHz in the receiver's own clock domain: no clock island, no
-clock converter, one clock from TMDS decode to framebuffer write. In the fabric it
-sits between the receiver and the framebuffer's write channel; a
-control bit selects the stream's consumer (the judge's capture path,
-or the ISP), and `scripts/isp.py` is the ARM's entire remaining job:
-point two VDMA channels at one buffer, flip the bit, report status.
-Pixels do not touch software. The camera is on the TV, in colour.
+148.5 MHz on the board's own clock. In the fabric it sits between
+the receiver and the output tee; a control bit selects the stream's
+consumer (the judge's capture path, or the ISP), and the ARM has no
+standing job at all: pixels do not touch software, and neither does
+the picture's survival. The camera is on the TV, in colour.
 
 `boards/pynq-z2/tpg_top.v` (+ `tpg_rtl.tcl`) is the port prover kept
 as a diagnostic: pure-RTL colour bars out of BOTH HDMI jacks, no PS

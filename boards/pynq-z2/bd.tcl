@@ -11,6 +11,7 @@ set_property ip_repo_paths [file join $root vivado-library] [current_project]
 update_ip_catalog
 
 add_files [file join $root hdl generated scanout.v] \
+    [file join $root hdl generated grab_fifo.v] \
     [file join $root hdl link_reset.v] [file join $root hdl stream_switch.v] [file join $root hdl axis_unpack.v] \
     [file join $root hdl isp_axis.v] [file join $root hdl generated revela_isp.v] \
     [file join $root hdl generated isp_tee.v] [file join $root hdl generated isp_skid.v] [file join $root hdl tee_shim.v] [file join $root hdl axis_pick.v] \
@@ -359,8 +360,13 @@ if {$genlock_en} {
 # owning its buffering, its re-arming and its races is proper. The
 # display never depends on it: grabbing on, off, halted or torn,
 # the picture is the direct branch's and stays whole.
+# ONE frame store, stated: the grabber is a single-buffer instrument
+# by contract (software owns any fancier buffering), and a store
+# register nobody programmed is ADDRESS ZERO -- an engine built with
+# three stores visited it (DMAIntErr, frames toward low DDR).
 set_property -dict [list CONFIG.c_include_mm2s {0} \
     CONFIG.c_use_fsync {0} \
+    CONFIG.c_num_fstores {1} \
     CONFIG.c_s2mm_genlock_mode {0}] $vdma
 
 # --- interrupts: the pynq drivers refuse to exist without them
@@ -385,7 +391,13 @@ set ctrl [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio ctrl_gpio]
 # are quasi-static and honoured by the tee at frame boundaries only,
 # so a write here changes the picture a frame later and never tears
 # it.
+# POWER-ON DEFAULTS say what the board IS: consumer = ISP (bit 1)
+# and the direct picture enabled (bit 4). A freshly programmed board
+# shows the camera with no software running at all -- the board is a
+# bitstream; scripts are visitors. Grab (bit 3) defaults off, so the
+# write engine never touches memory nobody allocated.
 set_property -dict [list CONFIG.C_GPIO_WIDTH {5} CONFIG.C_ALL_OUTPUTS {1} \
+    CONFIG.C_DOUT_DEFAULT {0x00000012} \
     CONFIG.C_IS_DUAL {1} CONFIG.C_GPIO2_WIDTH {32} \
     CONFIG.C_ALL_OUTPUTS_2 {1}] $ctrl
 # Bit 0 is the broom, bit 1 selects the stream's consumer (judge/ISP).
@@ -592,13 +604,12 @@ connect_bd_net [get_bd_pins blrx/hdr_source_id]  [get_bd_pins ident_cat/In0]
 connect_bd_net [get_bd_pins blrx/resync_count]   [get_bd_pins ident_cat/In1]
 connect_bd_net [get_bd_pins link_rst/link_up]    [get_bd_pins ident_cat/In2]
 connect_bd_net [get_bd_pins link_rst/loss_count] [get_bd_pins ident_cat/In3]
-# The read engine's status bits read zero rather than moving every
-# other field in the word: a host reading this register keeps its
-# offsets. (The engine itself is retired; the display is direct.)
-set fbz [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant fb_absent]
-set_property -dict [list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {0}] $fbz
-connect_bd_net [get_bd_pins fb_absent/dout] [get_bd_pins ident_cat/In4]
-connect_bd_net [get_bd_pins fb_absent/dout] [get_bd_pins ident_cat/In5]
+# The retired read engine's two status slots now carry the tee's
+# torn stickies -- same offsets, honest new meaning: a branch that
+# fell behind lost ITS OWN beats (the tee never stalls; a consumer's
+# death is private). torn_a = display branch, torn_b = grabber.
+connect_bd_net [get_bd_pins isp_tee/torn_a] [get_bd_pins ident_cat/In4]
+connect_bd_net [get_bd_pins isp_tee/torn_b] [get_bd_pins ident_cat/In5]
 set fbz8 [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant fb_dbg0]
 set_property -dict [list CONFIG.CONST_WIDTH {8} CONFIG.CONST_VAL {0}] $fbz8
 connect_bd_net [get_bd_pins fb_dbg0/dout] [get_bd_pins ident_cat/In6]

@@ -16,12 +16,20 @@ HERE = Path(__file__).resolve().parent.parent
 
 
 def main() -> None:
-    from np2hw import skid, tee
+    from np2hw import cdc_fifo, skid, tee
     # 33 bits: {sof, last, eol, rgb[29:0]} -- tee_shim.v owns the layout.
     out = HERE / "hdl" / "generated"
     out.mkdir(exist_ok=True)
     result = tee(33, module_name="isp_tee")
     (out / "isp_tee.v").write_text(result["verilog"] + "\n")
+    # The grabber's elastic: the tee never stalls, so a tap's ready
+    # must be as smooth as the stream -- the write engine's ready
+    # dips for bursts, and without slack every dip would tear the
+    # branch. Two lines of buffering makes the tap point always
+    # ready, the same way the display's crossing FIFO does for its
+    # branch. Same proven gray-pointer FIFO, both clocks tied.
+    gfifo = cdc_fifo(33, addr_bits=12, module_name="grab_fifo")
+    (out / "grab_fifo.v").write_text(gfifo["verilog"] + "\n")
     # The skid in front of it is what terminates the READY CONE: every
     # traced core's in_ready is combinational from its downstream, so
     # the chain passes ready sink-to-source, one gate deeper per block

@@ -27,7 +27,12 @@ module tee_shim (
     output wire [29:0] b_data,
     output wire        b_sof,
     output wire        b_eol,
-    output wire        b_last
+    output wire        b_last,
+    // sticky until reset: that branch lost mid-frame beats -- the
+    // tee never stalls, so a consumer that falls behind tears its
+    // own branch and testifies here
+    output wire        torn_a,
+    output wire        torn_b
 );
     wire [32:0] packed_in = {in_sof, in_last, in_eol, in_data};
     wire [32:0] a_packed, b_packed;
@@ -44,14 +49,31 @@ module tee_shim (
         .s_data(packed_in), .s_valid(in_valid), .s_ready(in_ready),
         .m_data(sk_data), .m_valid(sk_valid), .m_ready(sk_ready));
 
+    wire        bt_valid, bt_ready;
     isp_tee #(.W(33)) u_tee (
         .clk(clk), .rst(rst),
         .in_valid(sk_valid), .in_ready(sk_ready),
         .in_data(sk_data), .in_sof(sk_data[32]),
         .en_a(en_a), .en_b(en_b),
         .a_valid(a_valid), .a_ready(a_ready), .a_data(a_packed),
-        .b_valid(b_valid), .b_ready(b_ready), .b_data(b_packed));
+        .b_valid(bt_valid), .b_ready(bt_ready), .b_data(b_packed),
+        .torn_a(torn_a), .torn_b(torn_b));
 
     assign {a_sof, a_last, a_eol, a_data} = a_packed;
-    assign {b_sof, b_last, b_eol, b_data} = b_packed;
+
+    // The grabber's elastic, INSIDE the tap: the tee never stalls,
+    // so branch B's ready at the tee must be as smooth as the
+    // stream itself. The write engine's ready dips during bursts;
+    // two lines of slack here absorbs them, exactly as the display
+    // branch's crossing FIFO absorbs its side. Without this, every
+    // dip tears the branch (bench-paid: DMAIntErr on every frame,
+    // a sentinel buffer never written).
+    wire [32:0] bq_data;
+    grab_fifo u_bfifo (
+        .wclk(clk), .wrst(rst),
+        .in_data(b_packed), .in_valid(bt_valid), .in_ready(bt_ready),
+        .rclk(clk), .rrst(rst),
+        .out_data(bq_data), .out_valid(b_valid),
+        .out_ready(b_ready));
+    assign {b_sof, b_last, b_eol, b_data} = bq_data;
 endmodule
