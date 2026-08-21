@@ -92,17 +92,3 @@ set_property -dict { PACKAGE_PIN H18 IOSTANDARD TMDS_33 } [get_ports {hdmi_tx_da
 # but because the receiver's clock stops with the cable and the
 # island's does not. Its one exception lives above, with the header
 # facts it belongs to.
-
-# The display raster's MMCM (clk_out74, genlock builds only) and the
-# island's MMCM both derive from FCLK1, so the tools call their outputs
-# related and time the crossing against an arbitrary inter-VCO phase --
-# a 6 ps requirement on the gray-pointer synchronizers whose entire
-# design is to not need one. The FIFO's gray discipline IS the
-# synchronizer; the timer stands down. Declared, not false-pathed
-# per-net: every island<->raster path goes through that FIFO.
-set c74 [get_clocks -quiet clk_out1_rx_clk_out74_0]
-if {[llength $c74]} {
-    set_clock_groups -asynchronous \
-        -group $c74 \
-        -group [get_clocks clk_out1_rx_clk_out_0]
-}

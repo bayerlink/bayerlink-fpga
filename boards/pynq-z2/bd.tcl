@@ -109,6 +109,11 @@ set capture [expr {[info exists ::env(CAPTURE)] ? $::env(CAPTURE) : 1}]
 # clock and free-runs.
 set out_mhz [expr {[info exists ::env(OUT_MHZ)] ? $::env(OUT_MHZ) : 148.5}]
 set genlock_en [expr {$out_mhz < 100}]
+# the genlock clock groups ride a separate PLAIN xdc: strict XDC has
+# no `if`, and a skipped guard once timed the async crossing at 6 ps
+if {$genlock_en} {
+    add_files -fileset constrs_1 [file join $here genlock-clocks.xdc]
+}
 # BAKED or LIVE coefficients. 0 bakes them into the wrapper, which is
 # the demo that has a picture behind it; 1 brings up np2hw's AXI4-Lite
 # register file, whose writes land in a shadow and commit at a frame
@@ -145,18 +150,38 @@ if {$capture} {
 } else {
     set isp_src {blrx/out}
 }
-set cw [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz clk_out]
-# No_buffer: FCLK arrives from the PS already buffered; the default
-# expects a package PIN and builds an input path to nowhere -- an MMCM
-# that never sees an edge, and a perfectly silent dead clock.
-# Fed from FCLK1 (200 MHz), not FCLK0: the AXI clock moved to 1000/7
-# for scanout bandwidth, and 142.86 cannot synthesize an exact 148.5
-# (the nearest fractional divide lands 0.24% low). 200 x 3.7125 =
-# 742.5 VCO, /5 = 148.5 exactly -- the same VCO the 74.25 recipe used.
-set_property -dict [list CONFIG.PRIM_IN_FREQ {200.000} \
-    CONFIG.PRIM_SOURCE {No_buffer} \
-    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {148.500} \
-    CONFIG.USE_LOCKED {true} CONFIG.USE_RESET {false}] $cw
+# THE ISLAND CLOCK. Genlocked builds: FCLK0 directly -- the 148.5
+# exactness was the one-clock display era's requirement and died
+# when the display got its own MMCM; the island only needs to be
+# faster than the stream's average and of board ancestry, and
+# 142.86 is both. This retires a fractional MMCM, merges the island
+# with the PS-AXI domain (their converters go with it), and gives
+# the week's most timing-pressed logic 4% more period for free.
+# Legacy free-running builds keep the old 148.5 MMCM, island and
+# display as one clock, exactly as before.
+if {$genlock_en} {
+    set islck ps7/FCLK_CLK0
+    set lk1 [create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant lock_hi]
+    set_property -dict [list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {1}] $lk1
+    set isllock lock_hi/dout
+} else {
+    set islck clk_out/clk_out1
+    set isllock clk_out/locked
+    set cw [create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz clk_out]
+    # No_buffer: FCLK arrives from the PS already buffered; the default
+    # expects a package PIN and builds an input path to nowhere -- an MMCM
+    # that never sees an edge, and a perfectly silent dead clock.
+    # Fed from FCLK1 (200 MHz), not FCLK0: the AXI clock moved to 1000/7
+    # for scanout bandwidth, and 142.86 cannot synthesize an exact 148.5
+    # (the nearest fractional divide lands 0.24% low). 200 x 3.7125 =
+    # 742.5 VCO, /5 = 148.5 exactly -- the same VCO the 74.25 recipe used.
+    set_property -dict [list CONFIG.PRIM_IN_FREQ {200.000} \
+        CONFIG.PRIM_SOURCE {No_buffer} \
+        CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {148.500} \
+        CONFIG.USE_LOCKED {true} CONFIG.USE_RESET {false}] $cw
+    connect_bd_net [get_bd_pins ps7/FCLK_CLK1] [get_bd_pins clk_out/clk_in1]
+}
+
 if {$genlock_en} {
     # The raster's own MMCM -- not a second output of the island's.
     # The genlock steers this clock through the FINE PHASE SHIFTER
@@ -193,7 +218,6 @@ if {$genlock_en} {
     connect_bd_net [get_bd_pins ps7/FCLK_CLK1] [get_bd_pins clk_out74/clk_in1]
     connect_bd_net [get_bd_pins clk_out74/clk_out1] [get_bd_pins clk_out74/psclk]
 }
-connect_bd_net [get_bd_pins ps7/FCLK_CLK1] [get_bd_pins clk_out/clk_in1]
 
 # --- the ISP branch, an island on the BOARD'S OWN clock.
 #
@@ -224,13 +248,13 @@ foreach s {valid ready data sof eol last} {
 set icdc [create_bd_cell -type ip -vlnv xilinx.com:ip:axis_clock_converter isp_cdc]
 connect_bd_intf_net [get_bd_intf_pins isp_in_shim/m_axis] [get_bd_intf_pins isp_cdc/S_AXIS]
 connect_bd_net [get_bd_pins dvi_rx/PixelClk]  [get_bd_pins isp_cdc/s_axis_aclk]
-connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_cdc/m_axis_aclk]
+connect_bd_net [get_bd_pins $islck] [get_bd_pins isp_cdc/m_axis_aclk]
 set iun [create_bd_cell -type module -reference axis_unpack isp_unpack]
 set_property CONFIG.SAMPLE_BITS $sample_bits $iun
-connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_unpack/clk]
+connect_bd_net [get_bd_pins $islck] [get_bd_pins isp_unpack/clk]
 connect_bd_intf_net [get_bd_intf_pins isp_cdc/M_AXIS] [get_bd_intf_pins isp_unpack/s_axis]
 set isp [create_bd_cell -type module -reference revela_isp isp]
-connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp/clk]
+connect_bd_net [get_bd_pins $islck] [get_bd_pins isp/clk]
 # The stream's own facts drive the pipeline context: header to ctx,
 # one owner end to end. This is now a REAL clock crossing -- pixel
 # domain to the island -- and it is safe for the same reason it always
@@ -257,19 +281,19 @@ foreach s {valid ready data sof eol last} {
 # the honest failure (scanout refuses between frames), with the
 # framebuffer as the rate adapter.
 set tsh [create_bd_cell -type module -reference tee_shim isp_tee]
-connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_tee/clk]
+connect_bd_net [get_bd_pins $islck] [get_bd_pins isp_tee/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp/out_$s] [get_bd_pins isp_tee/in_$s]
 }
 set iax [create_bd_cell -type module -reference isp_axis isp_out]
-connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_out/clk]
+connect_bd_net [get_bd_pins $islck] [get_bd_pins isp_out/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp_tee/b_$s] [get_bd_pins isp_out/in_$s]
 }
 connect_bd_intf_net [get_bd_intf_pins isp_out/m_axis] [get_bd_intf_pins vdma/S_AXIS_S2MM]
 # The direct branch, dressed the same way for the same sink dialect.
 set idx [create_bd_cell -type module -reference isp_axis isp_dir]
-connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins isp_dir/clk]
+connect_bd_net [get_bd_pins $islck] [get_bd_pins isp_dir/clk]
 foreach s {valid ready data sof eol last} {
     connect_bd_net [get_bd_pins isp_tee/a_$s] [get_bd_pins isp_dir/in_$s]
 }
@@ -316,8 +340,11 @@ set tx [create_bd_cell -type ip -vlnv digilentinc.com:ip:rgb2dvi hdmi_tx]
 # kClkRange picks the serializer MMCM's multiplier bucket (MULT_F =
 # range*5, from the IP source): 1 covers >=120 MHz (148.5 x 5 = 742.5
 # VCO), 2 covers >=60 (74.25 x 10 = the same 742.5 VCO).
+# PLL, not MMCM: a fixed x5 with no phase steering is the PLL's
+# whole job (integer math exact: 74.25 -> VCO 1113.75 /3; 148.5 ->
+# VCO 1485 /2), and it hands an MMCM back to the budget.
 set_property -dict [list CONFIG.kGenerateSerialClk {true} \
-    CONFIG.kClkPrimitive {MMCM} \
+    CONFIG.kClkPrimitive {PLL} \
     CONFIG.kClkRange [expr {$out_mhz >= 120 ? 1 : 2}] \
     CONFIG.kRstActiveHigh {true}] $tx
 set vp [create_bd_cell -type module -reference scanout_top scanout]
@@ -347,7 +374,7 @@ if {$genlock_en} {
     # side only disagree forever after, and the broom is already the
     # raster's own restart.
     set ocdc [create_bd_cell -type module -reference out_cdc out_cdc]
-    connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins out_cdc/wclk]
+    connect_bd_net [get_bd_pins $islck] [get_bd_pins out_cdc/wclk]
     connect_bd_net [get_bd_pins clk_out74/clk_out1] [get_bd_pins out_cdc/rclk]
     connect_bd_intf_net [get_bd_intf_pins isp_dir/m_axis] [get_bd_intf_pins out_cdc/s_axis]
     connect_bd_intf_net [get_bd_intf_pins out_cdc/m_axis] [get_bd_intf_pins scanout/s_axis]
@@ -470,9 +497,9 @@ if {$capture} {
 # s_axil_aresetn, so coefficients survive a cable pull, and the
 # datapath reloads its copies the moment its own reset releases.
 set irst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_isp]
-connect_bd_net [get_bd_pins clk_out/clk_out1]  [get_bd_pins rst_isp/slowest_sync_clk]
+connect_bd_net [get_bd_pins $islck]  [get_bd_pins rst_isp/slowest_sync_clk]
 connect_bd_net [get_bd_pins link_rst/rst_pix]  [get_bd_pins rst_isp/ext_reset_in]
-connect_bd_net [get_bd_pins clk_out/locked]    [get_bd_pins rst_isp/dcm_locked]
+connect_bd_net [get_bd_pins $isllock]    [get_bd_pins rst_isp/dcm_locked]
 foreach cell {isp isp_out isp_unpack isp_tee isp_dir} {
     connect_bd_net [get_bd_pins rst_isp/peripheral_reset] [get_bd_pins $cell/rst]
 }
@@ -520,7 +547,11 @@ if {$capture} {
     set_property -dict [list CONFIG.CONST_WIDTH {16} CONFIG.CONST_VAL {0}] $spy0
     connect_bd_net [get_bd_pins spy_tie/dout] [get_bd_pins status2_cat/In0]
 }
-connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins status2_cat/In1]
+if {$genlock_en} {
+    connect_bd_net [get_bd_pins clk_out74/locked] [get_bd_pins status2_cat/In1]
+} else {
+    connect_bd_net [get_bd_pins clk_out/locked] [get_bd_pins status2_cat/In1]
+}
 connect_bd_net [get_bd_pins scanout/status] [get_bd_pins status2_cat/In2]
 connect_bd_net [get_bd_pins status2_cat/dout] [get_bd_pins status_gpio/gpio2_io_i]
 # The v2 receiver's verdicts and header facts, packed for one read:
@@ -617,6 +648,20 @@ connect_bd_net [get_bd_pins ident_cat/dout] [get_bd_pins hdr_gpio/gpio2_io_i]
 connect_bd_net [get_bd_pins status_cat/dout] [get_bd_pins status_gpio/gpio_io_i]
 
 # --- automation for AXI plumbing, resets, address map
+#
+# The bus's own reset exists BEFORE any automation runs: released
+# once the PS is up, deliberately blind to the link. History twice
+# over -- the automation, offered a domain where the only
+# proc_sys_reset was the link's (rst_isp), borrowed it for the bus:
+# first for the register file (2026-08-17, power cycle), then again
+# the day the island joined FCLK0 and rst_isp entered the bus
+# domain's field of view (caught by checkhwh before it could hang
+# anything). The sweep after the automations makes the choice
+# deterministic regardless of what the automation prefers.
+set brst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_bus]
+connect_bd_net [get_bd_pins $islck]  [get_bd_pins rst_bus/slowest_sync_clk]
+connect_bd_net [get_bd_pins ps7/FCLK_RESET0_N] [get_bd_pins rst_bus/ext_reset_in]
+connect_bd_net [get_bd_pins $isllock] [get_bd_pins rst_bus/dcm_locked]
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
     {Clk_master {Auto} Clk_slave {Auto} Clk_xbar {Auto} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
     [get_bd_intf_pins vdma/S_AXI_LITE]
@@ -667,16 +712,14 @@ if {$control_en} {
     # converter is placed EXPLICITLY, every clock and reset named.
     # The automation is only ever handed the FCLK0 side, where there
     # is nothing cross-domain left to decide.
-    set brst [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_bus]
-    connect_bd_net [get_bd_pins clk_out/clk_out1]   [get_bd_pins rst_bus/slowest_sync_clk]
-    connect_bd_net [get_bd_pins ps7/FCLK_RESET0_N]  [get_bd_pins rst_bus/ext_reset_in]
-    connect_bd_net [get_bd_pins clk_out/locked]     [get_bd_pins rst_bus/dcm_locked]
-    connect_bd_net [get_bd_pins clk_out/clk_out1]   [get_bd_pins isp/s_axi_aclk]
+    connect_bd_net [get_bd_pins $islck]   [get_bd_pins isp/s_axi_aclk]
     # The regfile's reset pin is CONNECTED BEFORE the automation runs,
     # because a pin already taken is a pin the automation leaves alone.
     connect_bd_net [get_bd_pins rst_bus/peripheral_aresetn] [get_bd_pins isp/s_axi_aresetn]
     apply_bd_automation -rule xilinx.com:bd_rule:axi4 -config \
-        {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/clk_out/clk_out1} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}} \
+        [expr {$genlock_en
+            ? {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/ps7/FCLK_CLK0} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}}
+            : {Clk_master {/ps7/FCLK_CLK0} Clk_slave {/clk_out/clk_out1} Clk_xbar {/ps7/FCLK_CLK0} Master {/ps7/M_AXI_GP0} intc_ip {New AXI Interconnect}}}] \
         [get_bd_intf_pins isp/s_axi]
     # ...and then its choices are REPAIRED, because the automation also
     # picks a reset for the interconnect port it creates in the island
@@ -715,7 +758,7 @@ if {$control_en} {
     connect_bd_net [get_bd_pins ddc_phy/scl_i] [get_bd_pins ddc/scl_i]
     connect_bd_net [get_bd_pins ddc_phy/sda_i] [get_bd_pins ddc/sda_i]
     connect_bd_net [get_bd_pins ddc/sda_pull] [get_bd_pins ddc_phy/sda_pull]
-    connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins ddc/clk]
+    connect_bd_net [get_bd_pins $islck] [get_bd_pins ddc/clk]
     # rst is declared ACTIVE_HIGH at its owner; peripheral_reset is
     # the matching output of the bus's generator.
     connect_bd_net [get_bd_pins rst_bus/peripheral_reset] [get_bd_pins ddc/rst]
@@ -737,7 +780,7 @@ if {$control_en} {
     connect_bd_intf_net [get_bd_intf_pins ddc/M_AXI] [get_bd_intf_pins ic_ddc/S01_AXI]
     connect_bd_intf_net [get_bd_intf_pins ic_ddc/M00_AXI] [get_bd_intf_pins isp/s_axi]
     foreach c {ACLK S00_ACLK S01_ACLK M00_ACLK} {
-        connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins ic_ddc/$c]
+        connect_bd_net [get_bd_pins $islck] [get_bd_pins ic_ddc/$c]
     }
     foreach r {ARESETN S00_ARESETN S01_ARESETN M00_ARESETN} {
         connect_bd_net -net $busnet [get_bd_pins ic_ddc/$r]
@@ -800,7 +843,7 @@ connect_bd_net -net [get_bd_nets -of_objects [get_bd_pins axi_mem_intercon/S00_A
 # consumer on one clock, no converter, and a clock that keeps running
 # through an unplug -- the engine can now finish or fault a frame
 # instead of freezing mid-word when the cable goes.
-connect_bd_net [get_bd_pins clk_out/clk_out1] [get_bd_pins vdma/s_axis_s2mm_aclk]
+connect_bd_net [get_bd_pins $islck] [get_bd_pins vdma/s_axis_s2mm_aclk]
 # `cdc` belongs to the capture branch, so this belongs inside the same
 # guard. Left outside it, CAPTURE=0 -- a configuration this repo
 # documents and build.sh offers -- failed to build at all.
@@ -839,6 +882,31 @@ set lockinv [create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic lock_
 set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] $lockinv
 connect_bd_net [get_bd_pins $pixq/locked] [get_bd_pins lock_inv/Op1]
 connect_bd_net [get_bd_pins lock_inv/Res] [get_bd_pins hdmi_tx/aRst]
+# THE RESET SWEEP: anything a host can reach answers to the board.
+# The link's reset (rst_isp/peripheral_aresetn) legitimately resets
+# exactly one bus-shaped pin -- the stream converter's island face.
+# Every other aresetn the automations parked on it moves to the
+# bus's own reset, explicitly. checkhwh audits this from the built
+# design; this loop makes the audit boring.
+set linknet [get_bd_nets -quiet -of_objects [get_bd_pins rst_isp/peripheral_aresetn]]
+if {[llength $linknet]} {
+    foreach p [get_bd_pins -quiet -of_objects $linknet] {
+        set pn [get_property PATH $p]
+        if {[get_property DIR $p] ne "I"} { continue }
+        # the ONE legitimate rider: the stream converter's island face
+        # flushes with the link (paths carry a leading slash)
+        if {$pn eq "/isp_cdc/m_axis_aresetn"} { continue }
+        disconnect_bd_net $linknet [get_bd_pins $pn]
+        set bn [get_bd_nets -quiet -of_objects [get_bd_pins rst_bus/peripheral_aresetn]]
+        if {[llength $bn]} {
+            connect_bd_net -net $bn [get_bd_pins $pn]
+        } else {
+            connect_bd_net [get_bd_pins rst_bus/peripheral_aresetn] [get_bd_pins $pn]
+        }
+        puts "bd.tcl: reset sweep moved $pn to rst_bus"
+    }
+}
+
 assign_bd_address
 # Explicitly: both stream engines write the DDR through HP0. The
 # automation left dma/Data_S2MM UNMAPPED and validate called that a
