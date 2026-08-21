@@ -10,7 +10,7 @@
 # means a build that skips a generator fails on a missing file, which is
 # the correct failure and the reason this script exists.
 #
-#   ./build.sh                       1080p60 out, 1920x1080 ISP
+#   ./build.sh                       1080p30 out, genlocked, 1920x1080 ISP
 #
 # ISP_MHZ is the clock the pipeline is CUT for, and it must be the
 # link's own pixel clock (148.5 for 1080p): the ISP rides the
@@ -29,7 +29,11 @@
 # Also needs vivado-library/ and board-files/ beside this file; see the
 # README for the two clone commands.
 BOARD=${BOARD:-pynq-z2}
-MODE=${MODE:-1080p60}
+# The output raster. 1080p30 rides its own 74.25 MHz MMCM output and
+# GENLOCKS: rate and phase follow the stream, fps flows through, and
+# direct-to-glass is whole. 148.5-class modes (1080p60) free-run --
+# the store path shows each frame twice, as a standard TV signal.
+MODE=${MODE:-1080p30}
 W=${W:-1920}
 H=${H:-1080}
 BITS=${BITS:-10}
@@ -48,14 +52,11 @@ RX_FIFO=${RX_FIFO:-256}
 # because there are then two consumers. On for a bench build, off for
 # a demo. Whether the board CAN is the board's to say, below.
 CAPTURE=${CAPTURE:-1}
-# Which engine feeds the display. 0 is the VDMA, which works; 1 is
-# fbread, which is right in simulation and has never fetched a byte on
-# this board. The default is the one that puts a picture on a screen.
-FBREAD=${FBREAD:-0}
 # Coefficients baked into the bitstream (0) or written over AXI4-Lite
 # (1). The ISP's ports differ, so this one flag drives both the
-# generator and the block design; they cannot disagree.
-CONTROL=${CONTROL:-0}
+# generator and the block design; they cannot disagree. Live is the
+# default: the display reader's reset belongs to the bus this creates.
+CONTROL=${CONTROL:-1}
 
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here"
@@ -93,19 +94,26 @@ python3 gen/isp.py --width "$W" --height "$H" --bits "$BITS" \
     --clock-mhz "$ISP_MHZ"
 
 echo "== display raster (np2hw scanout)"
-python3 gen/scanout.py --mode "$MODE" --window "${W}x${H}"
+# The mode table is the one owner: the raster's pixel clock comes from
+# it, and the block design is TOLD rather than left to agree by luck.
+# 74.25-class modes genlock; 148.5-class free-run.
+OUT_MHZ=$(python3 -c "from np2hw.video_out import mode_timing; \
+print(mode_timing('$MODE')['pixel_mhz'])")
+GENLOCK=$(python3 -c "print(1 if $OUT_MHZ < 100 else 0)")
+export OUT_MHZ
+python3 gen/scanout.py --mode "$MODE" --window "${W}x${H}" \
+    $([ "$GENLOCK" = 1 ] && echo --genlock)
 
 echo "== output tee (np2hw)"
 python3 gen/tee.py
 python3 gen/ddc.py
-python3 gen/fbread.py
 
 echo "== implementation"
 cd "boards/$BOARD"
 # Both build-time choices reach the block design the same way: the
 # sample width for the glue's parameter, and whether to build the
 # capture branch at all.
-export BITS CAPTURE FBREAD CONTROL
+export BITS CAPTURE CONTROL
 vivado -mode batch -source bd.tcl
 vivado -mode batch -source impl_a.tcl
 vivado -mode batch -source impl_b.tcl

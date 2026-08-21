@@ -26,35 +26,17 @@ ISP_W, ISP_H = 1920, 1080   # the TV's best defines the sensor's ask
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bit", default="rx.bit")
-    parser.add_argument("--reader", choices=("vdma", "fbread"), default="vdma",
-                        help="which engine feeds the display, matching the "
-                             "bitstream. fbread owns its addressing -- its "
-                             "first beat IS the frame's first pixel -- and "
-                             "has run clean hardware days; vdma is the "
-                             "historic engine, kept until a build retires "
-                             "its read side")
-    parser.add_argument("--skew", type=int, default=0,
-                        help="the write engine's data lags its own "
-                             "start-of-frame by a number of beats that is "
-                             "MEASURED, not derived -- it lands somewhere new "
-                             "on every lock. 0 is this bitstream's, checked "
-                             "on a screen 2026-08-17; the previous build "
-                             "wanted 352, and the same design has wanted 16, "
-                             "48 and 80. If the picture is displaced, this is "
-                             "the number, and scripts/skew.py moves it live. "
-                             "fbread exists to make it not exist")
     parser.add_argument("--interval", type=float, default=10.0,
                         help="heartbeat seconds; changes print immediately "
                              "regardless, so a swap is never missed")
-    parser.add_argument("--output", choices=("store", "direct", "both", "off"),
-                        default="store",
-                        help="which tee branches run: the framebuffer "
-                             "store, the direct-to-scanout branch, both, "
-                             "or neither (standby -- the pipeline keeps "
-                             "running and discards). direct is only whole "
-                             "for sources matching the raster's frame "
-                             "rate; this bench's Pi does not, so expect "
-                             "scanout to refuse between frames")
+    parser.add_argument("--output", choices=("direct", "grab", "both", "off"),
+                        default="direct",
+                        help="which tee branches run: the genlocked "
+                             "direct-to-glass picture, the memory grabber, "
+                             "both, or neither (standby -- the pipeline "
+                             "keeps running and discards). The display "
+                             "never depends on the grabber; grabbing is "
+                             "an instrument for software to read")
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="status loop duration; 0 = forever")
     args = parser.parse_args()
@@ -92,51 +74,22 @@ def main() -> int:
                   "plug the camera whenever)")
         time.sleep(0.5)
 
-    # One spare line, kept although the reason for it is gone. It
-    # existed because the read started `skew` pixels in and ran that far
-    # past the picture; fbread starts exactly at the first pixel and
-    # reads exactly MODE_H lines. A line of DDR is a cheap guard against
-    # an off-by-one in a fetch engine reading someone else's pages.
-    # THREE frames, genlocked, plus the guard row: with two buffers and
-    # unrelated frame rates the writer eventually meets the displayed
-    # frame -- wait (stall the pipe) or tear. Three is the minimum where
-    # neither happens and the reader always shows the newest COMPLETED
-    # frame. 25MB against a 128MB CMA pool.
+    # The GRABBER's buffers. The display never reads these -- it is
+    # direct -- so their layout serves software alone. Three frames,
+    # circular, plus a guard row: with three, software reading the
+    # buffer one behind the write pointer never races the writer,
+    # which is a convenience the fabric provides for free. Whatever
+    # fancier buffering a consumer wants is the consumer's to build.
+    # (Grabbed frames land at a per-link-lock pixel offset -- the
+    # write engine's known roll; a reader compensates when it cares.)
     FSIZE = MODE_H * MODE_W * 4
     fb = allocate(shape=(3 * MODE_H + 1, MODE_W, 4), dtype="u1")
     fb[:] = 16
     fb.flush()
 
-    # Read side, one way or the other.
-    if args.reader == "fbread":
-        # fbread owns its addressing, so its first beat IS the frame's
-        # first pixel of what is IN the buffer. The read-side roll is
-        # gone -- and its absence decomposed the old measurement: the
-        # single --skew was always the SUM of two rolls, and the
-        # WRITE engine's half remains (the VDMA s2mm lands frames at
-        # a per-lock offset; 48 px measured 2026-08-19, from the
-        # same 0/16/48/80 family as ever). So --skew survives here,
-        # applied to the base address, until an fbwrite of the same
-        # kind owns the write side the way fbread now owns the read.
-        ctrl.write(0x8, fb.physical_address + args.skew * 4)
-    else:
-        # The VDMA's data lags its own start-of-frame marker by a number
-        # that lands somewhere new on every lock. Start the read that far
-        # in. Measured per bitstream with ruler.py and a capture card.
-        # GenlockEn (bit3) + internal GenlockSrc (bit7): the read side
-        # follows the write side's frame pointer inside the core, one
-        # completed frame behind. A propagated fsync+slave with nothing
-        # driving the pointer once starved this engine forever, so the
-        # pointer source is INTERNAL, on purpose, in software's hand.
-        vdma.write(0x00, 0x3 | (1 << 3) | (1 << 7))
-        for n in range(3):
-            vdma.write(0x5C + 4 * n,
-                       fb.physical_address + n * FSIZE + args.skew * 4)
-        vdma.write(0x58, MODE_W * 4)
-        vdma.write(0x54, MODE_W * 4)
-        vdma.write(0x50, MODE_H)
-
-    # Write side: the ISP lands its window centred, forever.
+    # The grabber lands the ISP window centred in a display-shaped
+    # frame, so a grabbed buffer is pixel-for-pixel what direct puts
+    # on glass.
     x0 = (MODE_W - ISP_W) // 2
     y0 = (MODE_H - ISP_H) // 2
     base = fb.physical_address + (y0 * MODE_W + x0) * 4
@@ -151,9 +104,9 @@ def main() -> int:
     # it ever sees starts at a tuser boundary.  Bit1 = consumer, bit0 =
     # broom; the broom sweeps while ISP mode is held.
     # Base control word: consumer select (bit1) plus the tee enables --
-    # store (bit3) and direct (bit4). The tee honours changes at frame
+    # grab (bit3) and direct (bit4). The tee honours changes at frame
     # boundaries only, so these flip whole frames, never mid-frame.
-    tee_bits = {"store": 0x8, "direct": 0x10, "both": 0x18, "off": 0x0}
+    tee_bits = {"grab": 0x8, "direct": 0x10, "both": 0x18, "off": 0x0}
     cbase = 0x2 | tee_bits[args.output]
     ctrl.write(0, cbase | 1)
     time.sleep(0.05)
@@ -162,48 +115,9 @@ def main() -> int:
     # bits cross into the display clock without a synchroniser because
     # they are still by the time they matter, and enable rising is what
     # says they are. Bit 2 alongside the consumer select.
-    if args.reader == "fbread":
-        # ADDRESS FIRST, THEN ENABLE: those 32 bits cross into the
-        # display clock without a synchroniser because they are still by
-        # the time they matter, and enable rising says they are.
-        time.sleep(0.01)
-        ctrl.write(0, cbase | 0x4)
-
-        # THE ROTATION, in software until the write engine can
-        # publish it in fabric:
-        # fbread must read the buffer the writer FINISHED LAST, never
-        # the one being written -- a fixed base met the cycling writer
-        # once per three frames, a 10 Hz flicker photographed
-        # 2026-08-19. The s2mm's PARK_PTR register says which store
-        # it is writing NOW (bits 28:24); last completed is one
-        # behind. fbread samples base_addr at each frame restart, so
-        # a mid-frame write here lands cleanly on the next frame.
-        # A 5 ms poll is three chances per source frame -- and this
-        # thread is exactly the kind of software-in-the-loop that
-        # a fabric fbwrite exists to retire, labelled as such.
-        import os
-        import threading
-
-        def follow_writer():
-            last = -1
-            while True:
-                wr = (vdma.read(0x28) >> 24) & 0x1F
-                done = (wr + 2) % 3
-                if done != last:
-                    ctrl.write(0x8,
-                               fb.physical_address + done * FSIZE
-                               + args.skew * 4)
-                    last = done
-                time.sleep(0.005)
-        if os.environ.get("FB_FOLLOW", "1") == "1":
-            threading.Thread(target=follow_writer, daemon=True).start()
-        else:
-            print("fbread: follower OFF (FB_FOLLOW=0) -- fixed base, "
-                  "for experiments that must not restart the engine")
     time.sleep(0.1)
 
     hgpio = MMIO(overlay.ip_dict["hdr_gpio"]["phys_addr"], 0x1000)
-    heals = [0]
 
     # A CONTROL build boots NEUTRAL -- gains 1.0, identity matrix --
     # which on this sensor is a green picture with no red. That is
@@ -247,33 +161,13 @@ def main() -> int:
         idw = hgpio.read(0x8)
         src, resyncs = idw & 0xFF, (idw >> 8) & 0xFF
         up, losses = (idw >> 16) & 1, (idw >> 17) & 0xFF
-        fb_under, fb_err = (idw >> 25) & 1, (idw >> 26) & 1
-        dbg = (idw >> 27) & 0x1F   # run,acct,short,stalled,long
-        # AUTO-HEAL, labelled as the patch it is: the engine can
-        # stall with its books pinned (acct latches the violation
-        # class -- arrivals exceeding bookings, mechanism still
-        # under investigation). Enable-rise is a full clean restart
-        # in fabric now, so the heal is one toggle. Every heal is
-        # COUNTED and printed: a silent workaround would bury the
-        # evidence the root cause needs.
-        # heal on FAULT STICKIES only. 'stalled' fires whenever the
-        # prefetch FIFO is comfortably full -- which is HEALTH -- and
-        # a heal triggered on it executed a working engine once per
-        # heartbeat for an evening. acct/short/long latch only on a
-        # real protocol violation.
-        if args.reader == "fbread" and (dbg & 0b10110):
-            heals[0] += 1
-            cur = ctrl.read(0)
-            ctrl.write(0, cur & ~0x4)
-            time.sleep(0.002)
-            ctrl.write(0, cur | 0x4)
-            print(f"fbread HEALED (#{heals[0]}): stalled=1, "
-                  f"acct={(dbg >> 2) & 1} -- books reset by enable rise")
         hdr = s1 >> 18
         # scanout's status word: sof-per-frame[2:0], locked, armed,
-        # underflow, misalign, refused. Exactly one start-of-frame beat
-        # per frame is correct; anything else means the stream's framing
-        # is not what the raster is anchoring to.
+        # underflow, misalign, refused -- and on a genlocked raster,
+        # glocked at bit 14: frame starts passing at the window origin,
+        # four in a row. Exactly one start-of-frame beat per frame is
+        # correct; anything else means the stream's framing is not what
+        # the raster is anchoring to.
         sc = (s2 >> 17) & 0x7FFF
         # The island's six levels -- see isl_cat in bd.tcl.
         isl = (s1 >> 2) & 0x3F
@@ -284,14 +178,10 @@ def main() -> int:
               f"refused={hdr & 1} bits={(hdr >> 4) & 0x1F} | scanout "
               f"armed={(sc >> 4) & 1} under={(sc >> 5) & 1} "
               f"misalign={(sc >> 6) & 1} win_refused={(sc >> 7) & 1} "
-              f"sof/frame={sc & 7} | "
-              f"s2mm_sr={vdma.read(0x34):#x} mm2s_sr={vdma.read(0x04):#x} | "
+              f"sof/frame={sc & 7} glocked={(sc >> 14) & 1} | "
+              f"s2mm_sr={vdma.read(0x34):#x} | "
               f"src={src} frame={seq} link={'up' if up else 'DOWN'} "
-              f"drops={losses} resyncs={resyncs} "
-              f"fb_under={fb_under} fb_err={fb_err} "
-              f"fb[run={dbg & 1} acct={(dbg >> 1) & 1} "
-              f"short={(dbg >> 2) & 1} stalled={(dbg >> 3) & 1} "
-              f"long={(dbg >> 4) & 1}]")
+              f"drops={losses} resyncs={resyncs}")
 
     report("up")
     t0 = time.time()
@@ -323,8 +213,8 @@ def main() -> int:
             # and re-armed -- only while the link is up, at most once a
             # second, and COUNTED, because a restart happening often
             # enough to matter is a bug report, not a recovery.
-            if (args.reader == "vdma" and time.time() - unhalt_t > 1.0
-                    and now[2] and args.output in ("store", "both")):
+            if (time.time() - unhalt_t > 1.0
+                    and now[2] and args.output in ("grab", "both")):
                 sr = vdma.read(0x34)
                 if sr & 1:                             # Halted
                     vdma.write(0x34, sr)               # W1C the stickies
@@ -339,20 +229,13 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        # The process's exit frees the CMA framebuffer, so the WRITER
-        # must not outlive it: an S2MM left running scribbles 60 frames
-        # a second over whatever the kernel hands those pages to next --
-        # page cache included, which is how an SD card's rootfs rots.
-        # The read side may keep scanning out; reads hurt nobody.
+        # The process's exit frees the CMA buffers, so the GRABBER
+        # must not outlive it: an S2MM left running scribbles frames
+        # over whatever the kernel hands those pages to next -- page
+        # cache included, which is how an SD card's rootfs rots. The
+        # display is direct and keeps the picture; it never touched
+        # this memory.
         vdma.write(0x30, 0x0)
-        # And stop the READ engine the same way it was started: with no
-        # base address there is nothing to fetch. It must not outlive
-        # this process either -- the pages go back to the kernel when
-        # the buffer is freed, and a master still reading them is a
-        # master reading whatever they become next.
-        if args.reader == "fbread":
-            ctrl.write(0, ctrl.read(0) & ~0x4)   # stop fetching
-            ctrl.write(0x8, 0)
         time.sleep(0.05)
     return 0
 

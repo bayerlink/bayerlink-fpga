@@ -32,8 +32,16 @@ def main() -> int:
                              "(default: the mode's full active area)")
     parser.add_argument("--at", default="",
                         help="X,Y placement; omit to centre the window")
+    parser.add_argument("--genlock", action="store_true",
+                        help="slave the raster to the stream by steering "
+                             "its MMCM's fine phase shift -- the raster's "
+                             "geometry never moves (a TV drops sync on "
+                             "any vertical-total motion; bench-paid). "
+                             "Also emits out_cdc, the dual-clock crossing "
+                             "the genlocked raster reads through")
     args = parser.parse_args()
 
+    from np2hw.stream import cdc_fifo
     from np2hw.video_out import mode_timing, scanout
 
     timing = mode_timing(args.mode)
@@ -49,7 +57,8 @@ def main() -> int:
         x0, y0 = int(sx), int(sy)
 
     core = scanout(mode=args.mode, module_name="scanout", sink="dvi",
-                   data_bits=24, fill=0x101010)
+                   data_bits=24, fill=0x101010, genlock=args.genlock)
+
 
     L = []
     a = L.append
@@ -61,6 +70,18 @@ def main() -> int:
     a("    input  wire        clk,")
     a("    input  wire        rst,")
     a("    input  wire        locked,")
+    if args.genlock:
+        a("    // 1: the raster follows the stream (the direct path);")
+        a("    // 0: free-run the mode (the store path reads a frame")
+        a("    // buffer at its own pace -- following THAT rate would")
+        a("    // be the raster chasing its own backpressure). The")
+        a("    // board wires this to the same bit that picks the path.")
+        a("    input  wire        param_follow,")
+        a("    // the MMCM's fine phase shifter: how the following")
+        a("    // actually happens. PSCLK is this module's clk.")
+        a("    output wire        ps_en,")
+        a("    output wire        ps_incdec,")
+        a("    input  wire        ps_done,")
     a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TDATA" *)')
     a("    input  wire [23:0] s_axis_tdata,")
     a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TVALID" *)')
@@ -91,21 +112,85 @@ def main() -> int:
     a(f"        .param_win_x0(16'd{x0}), .param_win_y0(16'd{y0}),")
     a(f"        .param_win_w(16'd{win_w}), .param_win_h(16'd{win_h}),")
     a(f"        .param_center(1'b{int(centre)}),")
+    if args.genlock:
+        a("        .param_follow(param_follow),")
+        a("        .ps_en(ps_en), .ps_incdec(ps_incdec),")
+        a("        .ps_done(ps_done),")
     a("        .act_x0(act_x0), .act_y0(act_y0),")
     a("        .vid_active_video(vid_active_video), .vid_data(vid_data),")
     a("        .vid_hsync(vid_hsync), .vid_vsync(vid_vsync),")
     a("        .status(full_status));")
     a("    // The board's status word is 15 bits wide; drop the top bit,")
-    a("    // which is the spare of the vsync counter.")
+    a("    // which is the zero pad above the packing.")
     a("    assign status = full_status[14:0];")
     a("endmodule")
+
+    if args.genlock:
+        # The elastic the genlocked raster reads through: the ISP island
+        # and the raster no longer share a clock, and the raster's lead
+        # (G_LEAD lines of a 1920 window) is STORAGE this FIFO carries.
+        # 8192 slots = four lines and headroom.
+        fifo = cdc_fifo(26, addr_bits=13, module_name="out_cdc_core")
+        a("")
+        a("// out_cdc: the island-to-raster crossing. AXIS on both faces,")
+        a("// np2hw's gray-pointer FIFO inside; tuser and tlast ride in")
+        a("// the payload word, one layout decision made here.")
+        a("module out_cdc (")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 wclk CLK",')
+        a('       X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axis, ASSOCIATED_RESET wrst" *)')
+        a("    input  wire        wclk,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 wrst RST",')
+        a('       X_INTERFACE_PARAMETER = "POLARITY ACTIVE_HIGH" *)')
+        a("    input  wire        wrst,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TDATA" *)')
+        a("    input  wire [31:0] s_axis_tdata,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TVALID" *)')
+        a("    input  wire        s_axis_tvalid,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TREADY" *)')
+        a("    output wire        s_axis_tready,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TUSER" *)')
+        a("    input  wire        s_axis_tuser,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TLAST" *)')
+        a("    input  wire        s_axis_tlast,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 rclk CLK",')
+        a('       X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF m_axis, ASSOCIATED_RESET rrst" *)')
+        a("    input  wire        rclk,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 rrst RST",')
+        a('       X_INTERFACE_PARAMETER = "POLARITY ACTIVE_HIGH" *)')
+        a("    input  wire        rrst,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 m_axis TDATA" *)')
+        a("    output wire [23:0] m_axis_tdata,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 m_axis TVALID" *)')
+        a("    output wire        m_axis_tvalid,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 m_axis TREADY" *)')
+        a("    input  wire        m_axis_tready,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 m_axis TUSER" *)')
+        a("    output wire        m_axis_tuser,")
+        a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 m_axis TLAST" *)')
+        a("    output wire        m_axis_tlast")
+        a(");")
+        a("    wire [25:0] head;")
+        a("    out_cdc_core fifo (")
+        a("        .wclk(wclk), .wrst(wrst),")
+        a("        .in_data({s_axis_tuser, s_axis_tlast, s_axis_tdata[23:0]}),")
+        a("        .in_valid(s_axis_tvalid), .in_ready(s_axis_tready),")
+        a("        .rclk(rclk), .rrst(rrst),")
+        a("        .out_data(head), .out_valid(m_axis_tvalid),")
+        a("        .out_ready(m_axis_tready));")
+        a("    assign m_axis_tdata = head[23:0];")
+        a("    assign m_axis_tlast = head[24];")
+        a("    assign m_axis_tuser = head[25];")
+        a("endmodule")
+        L.insert(0, fifo["verilog"])
 
     out = HERE / "hdl" / "generated"
     out.mkdir(exist_ok=True)
     (out / "scanout.v").write_text(core["verilog"] + "\n".join(L) + "\n")
     print(f"generated hdl/generated/scanout.v -- {timing['name']}, "
           f"{timing['pixel_mhz']:g} MHz, window {win_w}x{win_h} "
-          + (f"centred" if centre else f"at {x0},{y0}"))
+          + ("centred" if centre else f"at {x0},{y0}")
+          + (", genlocked by clock steering (8192-deep crossing)"
+             if args.genlock else ""))
     return 0
 
 

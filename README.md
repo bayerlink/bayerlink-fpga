@@ -61,7 +61,7 @@ using a stale one. It runs:
 ```sh
 python3 gen/receiver.py --board pynq-z2   # -> hdl/generated/bayerlink_rx.v
 python3 gen/isp.py  --width 1920 --height 1080 --clock-mhz 148.5
-python3 gen/scanout.py --mode 1080p60     # -> hdl/generated/scanout.v
+python3 gen/scanout.py --mode 1080p30 --genlock   # -> hdl/generated/scanout.v
 cd boards/pynq-z2 && vivado -mode batch -source bd.tcl
 vivado -mode batch -source impl_a.tcl
 vivado -mode batch -source impl_b.tcl
@@ -137,7 +137,7 @@ exactly how short it is before you start:
 | PS preset, DDR, HP ports | `boards/<board>/bd.tcl` | your board's preset or the vendor's own file |
 | the lane map | `gen/receiver.py --board` | SOLVED, not guessed: `bayerlink.pattern counting`, then `checker` |
 | the pixel clock | the link, not a choice | it is whatever your source sends |
-| the read engine's skew | measured per bitstream | the ruler, above |
+| the write-side skew | measured per link lock | the ruler, above |
 
 What you do NOT port: the receiver, the ISP and the raster themselves.
 They are generated for your width, depth and video mode, and they are
@@ -178,11 +178,19 @@ capacity only; `gen/receiver.py` takes no width and no depth.
 The display side closes the loop on one board: np2hw's scanout — a
 raster generator emitted from the one mode table, the header-parsing
 receiver's counterpart — drives Digilent's rgb2dvi on HDMI OUT, fed
-from a framebuffer in DDR. It arrives with the claims this bench paid
-for: a frame may be dropped but never displaced, a window that does
-not fit is refused rather than clipped, and pixel and enable leave
-together. `scripts/isp.py` runs the loop: camera in on one HDMI, the
-revela pipeline in fabric, live picture out the other HDMI.
+directly from the ISP stream. It arrives with the claims this bench
+paid for: a frame may be dropped but never displaced, a window that
+does not fit is refused rather than clipped, and pixel and enable
+leave together. The picture is genlocked — the display clock follows
+the sensor's rate through the MMCM's fine phase shifter while the
+raster's geometry never moves — so latency to glass is lines, always:
+there is no frame store in the picture path. Memory is an
+*instrument*: a grabber captures frames to an address software chose,
+for software to judge, and the display never depends on it.
+`scripts/isp.py` runs the loop: camera in on one HDMI, the revela
+pipeline in fabric, live picture out the other HDMI;
+`docs/clocking.md` tells the whole clocks-and-rates story, end to
+end.
 
 The ARM block was a placeholder, and it has been replaced: `gen/isp.py`
 composes a revela pipeline -- black level, white balance, bilinear
@@ -277,11 +285,11 @@ Lessons this repo already paid for, so you do not have to:
   no audit downstream can see it, because a beat that has not
   arrived carries no evidence. Arm per frame: a frame may be
   dropped, never displaced.
-- The AXI VDMA's MM2S data lags its own start-of-frame marker by a
-  fixed number of beats, constant for a bitstream and different
-  between bitstreams (306, 322, 338 here). It does NOT depend on the
-  buffer's address. Advance the read by the measured amount and give
-  the buffer a spare line.
+- A read engine whose start-of-frame marker travels ahead of its
+  data cannot be compensated, only retired: the offset first looked
+  constant per bitstream (306, 322, 338 here), then turned out to
+  re-roll on every link lock. The reader that replaced it owns its
+  addressing, so its first beat IS the frame's first pixel.
 - When a picture is in the wrong place, bisect before theorising: a
   raster that paints from its OWN counters, ignoring the stream,
   separates "my timing is wrong" from "the data arrives wrong" in
