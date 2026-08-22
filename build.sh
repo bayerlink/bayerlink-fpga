@@ -21,7 +21,7 @@
 #
 # Needs: vivado on PATH, and the generators, PINNED:
 #
-#   pip install np2hw==0.5.0 bayerlink==0.4.0 revela==0.1.0
+#   pip install np2hw==0.5.0 bayerlink==0.5.0 revela==0.2.0
 #
 # Pinned rather than latest because this repository claims a REPRODUCIBLE
 # demo: these are the versions the recorded bitstream was generated with,
