@@ -101,7 +101,11 @@ OUT_MHZ=$(python3 -c "from np2hw.video_out import mode_timing; \
 print(mode_timing('$MODE')['pixel_mhz'])")
 GENLOCK=$(python3 -c "print(1 if $OUT_MHZ < 100 else 0)")
 export OUT_MHZ
-python3 gen/scanout.py --mode "$MODE" --window "${W}x${H}" \
+# No --window: the raster's geometry IS the mode's active area, so the
+# mode is its one owner. (The ISP's geometry is the design's, in
+# gen/pipeline.json -- a different fact, deliberately independent: the
+# ISP takes what the header brings at run time.)
+python3 gen/scanout.py --mode "$MODE" \
     $([ "$GENLOCK" = 1 ] && echo --genlock)
 
 echo "== output tee (np2hw)"
