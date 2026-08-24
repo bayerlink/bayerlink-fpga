@@ -14,7 +14,41 @@
 // one coherent set or none of it. NEUTRAL at power-on -- calibration is
 // a sensor fact, restored over the cable by whoever holds the sensor's
 // profile.
-module revela_isp (
+module revela_isp #(
+    // BOTH of the ISP's boundary widths, handed down by the block design
+    // from what the generator published. The ISP is the deliverable and
+    // this shim is part of the harness around it, so it may not state
+    // either number: the input was written here as [9:0] and stayed
+    // correct exactly until the pipeline moved to 12 bits, at which
+    // point a block design connects the low ten and calls it a warning.
+    //
+    // The NAMES are the ones the rest of the datapath already uses --
+    // SAMPLE_BITS for one sample on the wire, DATA_BITS for the
+    // pipeline word -- because a second name for a fact is a second
+    // place to change it. The stream into the ISP is one sample per
+    // beat, so its input width IS the sample width that rx_axis and
+    // axis_unpack are built at; it was briefly carried alongside them
+    // under a name of its own, which made two numbers out of one and
+    // then wanted a check to keep them equal.
+    parameter SAMPLE_BITS = 12,
+    parameter DATA_BITS   = 24,
+    // The widest line the ISP was BUILT for -- its line buffers are
+    // this deep and its pointwise cores reframe every line from
+    // start-of-frame plus this number. They receive neither the
+    // stream's end-of-line nor the header's width, so a longer line
+    // cannot be noticed inside the pack: the cores would simply
+    // declare a new row part-way through the sensor's, shearing the
+    // picture and inverting the CFA phase on alternate rows, with
+    // colour applied to the wrong channels and no status bit anywhere.
+    //
+    // The receiver upstream refuses only what ITS OWN buffers cannot
+    // hold (max_line_bytes), which is a different and larger number --
+    // 3276 samples at 10-bit against this 1920 -- so everything in
+    // between arrives here perfectly well formed. Guarding it is this
+    // shim's job, because the shim is the only thing that knows both
+    // the line boundary and what the pack was built for.
+    parameter WIDTH    = 1920
+) (
     input  wire        clk,
     input  wire        rst,
     // The header's facts, straight from the receiver, latched as each
@@ -80,16 +114,21 @@ module revela_isp (
     input  wire        s_axi_rready,
     input  wire        in_valid,
     output wire        in_ready,
-    input  wire [9:0]  in_data,
+    input  wire [SAMPLE_BITS-1:0] in_data,
     input  wire        in_sof,
     input  wire        in_eol,
     input  wire        in_last,
     output wire        out_valid,
     input  wire        out_ready,
-    output wire [29:0] out_data,
+    output wire [DATA_BITS-1:0] out_data,
     output wire        out_sof,
     output wire        out_eol,
-    output wire        out_last
+    output wire        out_last,
+    // Sticky: a line arrived wider than the pack was built for and was
+    // cropped to it. VISIBLE and stated, rather than refused into a
+    // dark screen -- a picture that is merely narrow can be recognised
+    // and tuned; a black one is indistinguishable from a dead cable.
+    output reg         truncated
 );
     reg [15:0] ctx_w = 16'd1920;
     reg [15:0] ctx_h = 16'd1080;
@@ -97,11 +136,54 @@ module revela_isp (
     reg [4:0]  ctx_bd = 5'd10;
     always @(posedge clk)
         if (in_valid && in_ready && in_sof) begin
-            ctx_w  <= hdr_width;
+            // The pack cannot process more than it was built for, so
+            // the geometry it is TOLD is clamped to that. Everything
+            // downstream stays self-consistent: the window, the phase
+            // and the line buffers all agree on the same width.
+            ctx_w  <= (hdr_width > WIDTH) ? WIDTH[15:0] : hdr_width;
             ctx_h  <= hdr_height;
             ctx_ph <= hdr_phase;
             ctx_bd <= hdr_bits;
         end
+
+    // CROP, not refuse. Count this line's samples; hand the first
+    // WIDTH of them to the pack and swallow the rest until the
+    // stream's own end-of-line. The pack therefore sees exactly the
+    // lines it was built for, with the CFA phase intact, and the
+    // picture is the left WIDTH of a wider frame -- narrower than
+    // expected, and obviously so.
+    reg [15:0] lcol = 16'd0;
+    reg [15:0] lrow = 16'd0;
+    wire       keep = (lcol < WIDTH);
+    wire       core_ready;
+    // The framing flags are RE-TIMED, not just gated. On a cropped line
+    // the stream's own end-of-line and end-of-frame land on samples the
+    // pack never sees, and end-of-frame is not decoration: the pack
+    // commits a batch of coefficients on it. Gating it away would leave
+    // every calibration write stranded in the shadow, on exactly the
+    // frames where something is already going wrong. So the last KEPT
+    // sample of each line carries the line end, and the last kept
+    // sample of the last line carries the frame end.
+    wire       line_end = keep && ((lcol == WIDTH - 16'd1)
+                                   || in_eol || in_last);
+    wire       frame_end = line_end && (lrow == ctx_h - 16'd1);
+    // A dropped sample is ACCEPTED, not stalled: the surplus has to
+    // leave the receiver or the line never reaches its end and the
+    // frame stops. Only the kept samples wait on the pack.
+    assign in_ready = keep ? core_ready : 1'b1;
+    always @(posedge clk) begin
+        if (rst) begin
+            lcol <= 16'd0;
+            truncated <= 1'b0;          // sticky across frames, not resets
+        end else if (in_valid && in_ready) begin
+            if (in_eol || in_last) begin
+                lcol <= 16'd0;
+                lrow <= in_last ? 16'd0 : (lrow + 16'd1);
+            end else lcol <= lcol + 16'd1;
+            if (in_sof) lrow <= 16'd0;
+            if (!keep) truncated <= 1'b1;
+        end
+    end
     revela_isp_core_ctrl core (
         .clk(clk), .rst(rst),
         .s_axil_aclk(s_axi_aclk), .s_axil_aresetn(s_axi_aresetn),
@@ -117,9 +199,10 @@ module revela_isp (
         .s_axil_rvalid(s_axi_rvalid), .s_axil_rready(s_axi_rready),
         .ctx_width(ctx_w), .ctx_height(ctx_h),
         .ctx_bayer_phase(ctx_ph), .ctx_bit_depth(ctx_bd),
-        .isp_in_valid(in_valid), .isp_in_ready(in_ready),
+        .isp_in_valid(in_valid && keep), .isp_in_ready(core_ready),
         .isp_in_data(in_data),
-        .isp_in_sof(in_sof), .isp_in_eol(in_eol), .isp_in_last(in_last),
+        .isp_in_sof(in_sof && keep), .isp_in_eol(line_end),
+        .isp_in_last(frame_end),
         .isp_out_valid(out_valid), .isp_out_ready(out_ready),
         .isp_out_data(out_data),
         .isp_out_sof(out_sof), .isp_out_eol(out_eol),
