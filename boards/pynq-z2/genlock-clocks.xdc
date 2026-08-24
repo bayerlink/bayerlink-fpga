@@ -1,3 +1,5 @@
+# Copyright 2026 Serge Rabyking
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 # Genlock builds only (bd.tcl adds this file when the display has
 # its own MMCM). Strict XDC: no Tcl control flow -- an `if` in an
 # .xdc is silently skipped by some stages and the gray-pointer
