@@ -1,17 +1,26 @@
 // Copyright 2026 Serge Rabyking
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
-// The ISP's 30-bit RGB stream, dressed as AXI4-Stream video for a
-// VDMA S2MM writing the framebuffer. Channel 0 rides the LOW bits of
-// the pipeline word (revela's packing law); the framebuffer byte
-// order comes from rgb2dvi's bus: [23:16] R, [15:8] B, [7:0] G --
-// via the little-endian framebuffer word, bytes G, B, R, pad.
-// tuser marks start of frame, tlast end of line: the VDMA's dialect.
-module isp_axis (
+// The ISP's RGB stream, dressed as AXI4-Stream video for a VDMA S2MM
+// writing the framebuffer. Channel 0 rides the LOW bits of the pipeline
+// word (revela's packing law); the framebuffer byte order comes from
+// rgb2dvi's bus: [23:16] R, [15:8] B, [7:0] G -- via the little-endian
+// framebuffer word, bytes G, B, R, pad. tuser marks start of frame,
+// tlast end of line: the VDMA's dialect.
+//
+// DATA_BITS is the width the ISP actually TRACED, passed in by the block
+// design from what the generator published. It was written down here as
+// 30 while the pipeline was 10-bit, and that is a number which stays
+// correct until the day the pipeline changes and then produces a picture
+// rather than an error -- the slices would still elaborate against a
+// wider word and quietly read the wrong bits.
+module isp_axis #(
+    parameter DATA_BITS = 24
+) (
     input  wire        clk,
     input  wire        rst,
     input  wire        in_valid,
     output wire        in_ready,
-    input  wire [29:0] in_data,   // R [9:0], G [19:10], B [29:20]
+    input  wire [DATA_BITS-1:0] in_data,   // R low, G mid, B high
     input  wire        in_sof,
     input  wire        in_eol,
     input  wire        in_last,
@@ -22,9 +31,20 @@ module isp_axis (
     output wire        m_axis_tuser,
     output wire        m_axis_tlast
 );
-    wire [7:0] r8 = in_data[9:2];
-    wire [7:0] g8 = in_data[19:12];
-    wire [7:0] b8 = in_data[29:22];
+    // Three equal lanes, and the cable downstream is 8 bits a channel
+    // whatever the pipeline carries, so this takes each lane's TOP eight.
+    // With the display curve doing the narrowing (the ordinary case) a
+    // lane is already 8 and this is the identity; a design that keeps
+    // more depth to the end truncates once, here, at the cable.
+    localparam CH = DATA_BITS / 3;
+    wire [7:0] r8 = in_data[0*CH + CH-1 -: 8];
+    wire [7:0] g8 = in_data[1*CH + CH-1 -: 8];
+    wire [7:0] b8 = in_data[2*CH + CH-1 -: 8];
+`ifdef SIMULATION
+    initial if (CH * 3 !== DATA_BITS || CH < 8)
+        $fatal(1, "isp_axis: DATA_BITS=%0d is not three lanes of at least 8",
+               DATA_BITS);
+`endif
 
     // A FENCE, not a wire -- because this module's reset and its
     // consumer's are different laws. The ISP island resets when the

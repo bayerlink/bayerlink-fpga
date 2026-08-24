@@ -1,3 +1,5 @@
+// Copyright 2026 Serge Rabyking
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 `timescale 1ns/1ps
 // The fence's one law: tvalid, once raised, falls only after tready.
 // The consumer's reset is not this module's reset -- a VDMA keeps its
@@ -5,17 +7,38 @@
 // broken mid-beat wedged a processor on 2026-08-18. So the testbench
 // holds tready LOW, asserts rst mid-offer, and watches whether the
 // offer survives. The combinational version fails in one cycle.
+//
+// Run:  iverilog -g2012 -DSIMULATION -o /tmp/ia.vvp sim/tb_isp_axis.v \
+//           hdl/isp_axis.v && /tmp/ia.vvp
 module tb;
   reg clk = 0; always #5 clk = ~clk;
   reg rst = 0;
+
+  // The width is stated ONCE here and passed down, never left to the
+  // module's default and restated in the stimulus. This bench drove 30
+  // bits at a 24-bit port for as long as it took the pipeline's gamma to
+  // start narrowing to 8, and reported the mismatch as twelve failures
+  // of the fence. Everything below is derived from it, so the next
+  // change to the ISP's boundary moves one line.
+  localparam DATA_BITS = 24;
+  localparam CH = DATA_BITS / 3;
+
   reg        in_valid = 0;
   wire       in_ready;
-  reg [29:0] in_data = 0;
+  reg [DATA_BITS-1:0] in_data = 0;
   reg in_sof = 0, in_eol = 0, in_last = 0;
   wire tvalid; reg tready = 0;
   wire [31:0] tdata; wire [3:0] tkeep; wire tuser, tlast;
 
-  isp_axis dut (.clk(clk), .rst(rst),
+  // What the cable expects of a beat: the top eight of each lane, in
+  // rgb2dvi's byte order through the little-endian framebuffer word.
+  function [31:0] beat(input [DATA_BITS-1:0] d);
+    beat = {8'h00, d[0*CH + CH-1 -: 8],      // R
+                   d[2*CH + CH-1 -: 8],      // B
+                   d[1*CH + CH-1 -: 8]};     // G
+  endfunction
+
+  isp_axis #(.DATA_BITS(DATA_BITS)) dut (.clk(clk), .rst(rst),
     .in_valid(in_valid), .in_ready(in_ready), .in_data(in_data),
     .in_sof(in_sof), .in_eol(in_eol), .in_last(in_last),
     .m_axis_tvalid(tvalid), .m_axis_tready(tready),
@@ -40,13 +63,32 @@ module tb;
     eq_r = eq_r + 1; got = got + 1;
   end
 
-  task offer(input [29:0] d);
+  task offer(input [DATA_BITS-1:0] d);
     begin
       in_data = d; in_valid = 1;
-      expect_q[eq_w] = {8'h00, d[9:2], d[29:22], d[19:12]};
+      expect_q[eq_w] = beat(d);
       eq_w = eq_w + 1;
-      @(posedge clk); while (!in_ready) @(posedge clk);
-      #1 in_valid = 0;
+      @(negedge clk); #1;
+      while (!in_ready) begin @(negedge clk); #1; end
+      // Cleared just AFTER the transferring edge. Cleared at it, the
+      // blocking assignment lands before the DUT samples and the beat
+      // is never taken at all.
+      @(posedge clk); #1;
+      in_valid = 0;
+    end
+  endtask
+
+  // A beat built lane by lane, so the stimulus does not assume a lane
+  // width either: the eight bits that reach the cable are the top eight
+  // of each lane, whatever the lane is.
+  task offer3(input [7:0] r, input [7:0] g, input [7:0] b);
+    reg [DATA_BITS-1:0] d;
+    begin
+      d = 0;
+      d[0*CH + CH-1 -: 8] = r;
+      d[1*CH + CH-1 -: 8] = g;
+      d[2*CH + CH-1 -: 8] = b;
+      offer(d);
     end
   endtask
 
@@ -55,12 +97,13 @@ module tb;
     repeat (4) @(posedge clk);
     // --- plain flow, sink willing --------------------------------
     tready = 1;
-    for (i = 0; i < 8; i = i + 1) offer(i * 30'h1041041 + 30'h3);
+    for (i = 0; i < 8; i = i + 1)
+      offer3(i[7:0] + 8'h11, i[7:0] + 8'h22, i[7:0] + 8'h33);
     repeat (2) @(posedge clk);
 
     // --- THE test: offer a beat, sink stalls, reset lands --------
     tready = 0;
-    offer(30'h2AAAAAAA);
+    offer3(8'hAA, 8'hAA, 8'hAA);
     // the beat is now offered and un-taken; the link drops:
     rst = 1;
     repeat (10) @(posedge clk);
@@ -70,17 +113,25 @@ module tb;
     tready = 1; @(posedge clk); #1;
     repeat (2) @(posedge clk);
     quiet_in_rst = !tvalid;            // and then: silence, while rst
-    in_valid = 1; in_data = 30'h15555555;   // upstream noise in reset
+    in_valid = 1; in_data = {DATA_BITS{1'b1}};  // upstream noise in reset
     repeat (4) @(posedge clk);
     quiet_in_rst = quiet_in_rst && !tvalid;
     in_valid = 0;
     eq_w = eq_r;                       // discard the noise expectation
     // --- release, stream resumes ---------------------------------
     rst = 0; repeat (2) @(posedge clk);
-    for (i = 0; i < 4; i = i + 1) offer(i * 30'h2082082 + 30'h7);
+    for (i = 0; i < 4; i = i + 1)
+      offer3(i[7:0] + 8'h44, i[7:0] + 8'h55, i[7:0] + 8'h66);
     repeat (4) @(posedge clk);
     $display("RESULT chops=%0d wobbles=%0d errs=%0d got=%0d survived=%0d stable=%0d quiet=%0d",
              chops, wobbles, errs, got, survived, held_stable, quiet_in_rst);
+    // Stated as a verdict, not left as numbers to be read by eye: this
+    // bench printed errs=12 for long enough to be walked past.
+    if (chops || wobbles || errs || got != 13 || !survived || !held_stable
+        || !quiet_in_rst)
+      $display("isp axis: FAILED");
+    else
+      $display("isp axis: all checks passed");
     $finish;
   end
   initial begin #8000; $display("RESULT TIMEOUT"); $finish; end

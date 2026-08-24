@@ -4,13 +4,18 @@
 // direct display branch. The tee itself is np2hw's, payload-agnostic;
 // this shim owns ONE fact -- how the flags pack beside the pixels --
 // stated here once so both branches unpack the same layout.
-//   [29:0] rgb   [30] eol   [31] last   [32] sof
-module tee_shim (
+//   [DATA_BITS-1:0] rgb   [+0] eol   [+1] last   [+2] sof
+//
+// DATA_BITS is the width the ISP traced, handed down by the block design
+// rather than written here: this shim owns the LAYOUT, not the width.
+module tee_shim #(
+    parameter DATA_BITS = 24
+) (
     input  wire        clk,
     input  wire        rst,
     input  wire        in_valid,
     output wire        in_ready,
-    input  wire [29:0] in_data,
+    input  wire [DATA_BITS-1:0] in_data,
     input  wire        in_sof,
     input  wire        in_eol,
     input  wire        in_last,
@@ -18,13 +23,13 @@ module tee_shim (
     input  wire        en_b,       // framebuffer store branch
     output wire        a_valid,
     input  wire        a_ready,
-    output wire [29:0] a_data,
+    output wire [DATA_BITS-1:0] a_data,
     output wire        a_sof,
     output wire        a_eol,
     output wire        a_last,
     output wire        b_valid,
     input  wire        b_ready,
-    output wire [29:0] b_data,
+    output wire [DATA_BITS-1:0] b_data,
     output wire        b_sof,
     output wire        b_eol,
     output wire        b_last,
@@ -34,15 +39,15 @@ module tee_shim (
     output wire        torn_a,
     output wire        torn_b
 );
-    wire [32:0] packed_in = {in_sof, in_last, in_eol, in_data};
-    wire [32:0] a_packed, b_packed;
+    wire [DATA_BITS+2:0] packed_in = {in_sof, in_last, in_eol, in_data};
+    wire [DATA_BITS+2:0] a_packed, b_packed;
 
     // The skid FIRST: the ISP's in_ready ripples combinationally from
     // its sink through every block (the boundary_report finding), and
     // the tee's lockstep fork below would add its own levels to that
     // cone. The skid's registered ready is where the cone ends -- the
     // ISP sees a flop whatever is wired past this point.
-    wire [32:0] sk_data;
+    wire [DATA_BITS+2:0] sk_data;
     wire        sk_valid, sk_ready;
     isp_skid #(.W(33)) u_skid (
         .clk(clk), .rst(rst),
@@ -50,10 +55,10 @@ module tee_shim (
         .m_data(sk_data), .m_valid(sk_valid), .m_ready(sk_ready));
 
     wire        bt_valid, bt_ready;
-    isp_tee #(.W(33)) u_tee (
+    isp_tee #(.W(DATA_BITS + 3)) u_tee (
         .clk(clk), .rst(rst),
         .in_valid(sk_valid), .in_ready(sk_ready),
-        .in_data(sk_data), .in_sof(sk_data[32]),
+        .in_data(sk_data), .in_sof(sk_data[DATA_BITS + 2]),
         .en_a(en_a), .en_b(en_b),
         .a_valid(a_valid), .a_ready(a_ready), .a_data(a_packed),
         .b_valid(bt_valid), .b_ready(bt_ready), .b_data(b_packed),
@@ -68,7 +73,7 @@ module tee_shim (
     // branch's crossing FIFO absorbs its side. Without this, every
     // dip tears the branch (bench-paid: DMAIntErr on every frame,
     // a sentinel buffer never written).
-    wire [32:0] bq_data;
+    wire [DATA_BITS+2:0] bq_data;
     grab_fifo u_bfifo (
         .wclk(clk), .wrst(rst),
         .in_data(b_packed), .in_valid(bt_valid), .in_ready(bt_ready),
