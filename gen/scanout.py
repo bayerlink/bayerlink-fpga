@@ -30,6 +30,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 
+# The framebuffer's word on the AXI-Stream side: xRGB, one pad
+# byte, as isp_axis packs it and the VDMA moves it. A different
+# fact from the cable's width, which the board owns.
+FB_WORD_BITS = 32
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -66,8 +71,15 @@ def main() -> int:
         (HERE / "boards" / args.board / "board.json").read_text())
     choices = json.loads(
         (HERE / "boards" / args.board / "design.json").read_text())["build"]
+    # ONE name for the cable's width, used by the core AND by the
+    # wrapper emitted below. The wrapper wrote 24 out as [23:0] in five
+    # places, so board.json owned the number for np2hw's core and this
+    # file quietly owned it again for everything around the core -- a
+    # board with a wider transmitter would have got a matching core
+    # inside a 24-bit shell.
+    cable = int(board["cable_data_bits"])
     core = scanout(mode=args.mode, module_name="scanout",
-                   sink=board["sink"], data_bits=board["cable_data_bits"],
+                   sink=board["sink"], data_bits=cable,
                    fill=int(choices["fill"], 0), genlock=args.genlock)
     # Which level of vsync means "in the sync pulse" is a fact of the
     # mode, not a convention to remember: the raster gets it from the
@@ -147,7 +159,7 @@ def main() -> int:
         a("    output wire        ps_incdec,")
         a("    input  wire        ps_done,")
     a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TDATA" *)')
-    a("    input  wire [23:0] s_axis_tdata,")
+    a(f"    input  wire [{cable - 1}:0] s_axis_tdata,")
     a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TVALID" *)')
     a("    input  wire        s_axis_tvalid,")
     a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TREADY" *)')
@@ -159,7 +171,7 @@ def main() -> int:
     a('    (* X_INTERFACE_INFO = "xilinx.com:interface:vid_io:1.0 vid_io ACTIVE_VIDEO" *)')
     a("    output wire        vid_active_video,")
     a('    (* X_INTERFACE_INFO = "xilinx.com:interface:vid_io:1.0 vid_io DATA" *)')
-    a("    output wire [23:0] vid_data,")
+    a(f"    output wire [{cable - 1}:0] vid_data,")
     a('    (* X_INTERFACE_INFO = "xilinx.com:interface:vid_io:1.0 vid_io HSYNC" *)')
     a("    output wire        vid_hsync,")
     a('    (* X_INTERFACE_INFO = "xilinx.com:interface:vid_io:1.0 vid_io VSYNC" *)')
@@ -251,7 +263,8 @@ def main() -> int:
         # and the raster no longer share a clock, and the raster's lead
         # (G_LEAD lines of a 1920 window) is STORAGE this FIFO carries.
         # 8192 slots = four lines and headroom.
-        fifo = cdc_fifo(26, addr_bits=13, module_name="out_cdc_core")
+        fifo = cdc_fifo(cable + 2, addr_bits=13,
+                        module_name="out_cdc_core")
         a("")
         a("// out_cdc: the island-to-raster crossing. AXIS on both faces,")
         a("// np2hw's gray-pointer FIFO inside; tuser and tlast ride in")
@@ -264,7 +277,12 @@ def main() -> int:
         a('       X_INTERFACE_PARAMETER = "POLARITY ACTIVE_HIGH" *)')
         a("    input  wire        wrst,")
         a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TDATA" *)')
-        a("    input  wire [31:0] s_axis_tdata,")
+        # 32, and NOT the cable's width: this port takes the
+        # framebuffer's word from the VDMA, which is xRGB with a
+        # pad byte. The low `cable` bits of it are what reaches
+        # the transmitter, which is why the slice below is
+        # explicit rather than a whole-word connection.
+        a(f"    input  wire [{FB_WORD_BITS - 1}:0] s_axis_tdata,")
         a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TVALID" *)')
         a("    input  wire        s_axis_tvalid,")
         a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 s_axis TREADY" *)')
@@ -280,7 +298,7 @@ def main() -> int:
         a('       X_INTERFACE_PARAMETER = "POLARITY ACTIVE_HIGH" *)')
         a("    input  wire        rrst,")
         a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 m_axis TDATA" *)')
-        a("    output wire [23:0] m_axis_tdata,")
+        a(f"    output wire [{cable - 1}:0] m_axis_tdata,")
         a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 m_axis TVALID" *)')
         a("    output wire        m_axis_tvalid,")
         a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 m_axis TREADY" *)')
@@ -290,17 +308,18 @@ def main() -> int:
         a('    (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 m_axis TLAST" *)')
         a("    output wire        m_axis_tlast")
         a(");")
-        a("    wire [25:0] head;")
+        a(f"    wire [{cable + 1}:0] head;")
         a("    out_cdc_core fifo (")
         a("        .wclk(wclk), .wrst(wrst),")
-        a("        .in_data({s_axis_tuser, s_axis_tlast, s_axis_tdata[23:0]}),")
+        a(f"        .in_data({{s_axis_tuser, s_axis_tlast, "
+          f"s_axis_tdata[{cable - 1}:0]}}),")
         a("        .in_valid(s_axis_tvalid), .in_ready(s_axis_tready),")
         a("        .rclk(rclk), .rrst(rrst),")
         a("        .out_data(head), .out_valid(m_axis_tvalid),")
         a("        .out_ready(m_axis_tready));")
-        a("    assign m_axis_tdata = head[23:0];")
-        a("    assign m_axis_tlast = head[24];")
-        a("    assign m_axis_tuser = head[25];")
+        a(f"    assign m_axis_tdata = head[{cable - 1}:0];")
+        a(f"    assign m_axis_tlast = head[{cable}];")
+        a(f"    assign m_axis_tuser = head[{cable + 1}];")
         a("endmodule")
         L.insert(0, fifo["verilog"])
 
