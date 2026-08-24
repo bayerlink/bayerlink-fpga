@@ -211,16 +211,14 @@ consumer (the judge's capture path, or the ISP), and the ARM has no
 standing job at all: pixels do not touch software, and neither does
 the picture's survival. The camera is on the TV, in colour.
 
-`boards/pynq-z2/tpg_top.v` (+ `tpg_rtl.tcl`) is the port prover kept
-as a diagnostic: pure-RTL colour bars out of BOTH HDMI jacks, no PS
-software, no DMA — if a display shows bars, everything below the
-stream layer is exonerated. It is also how this repo learned that the
-IN jack cannot transmit: a sink connector offers the display no +5V.
-
 ## The bring-up ledger
 
 Lessons this repo already paid for, so you do not have to:
 
+- The IN jack cannot transmit. A sink connector offers the display no
+  +5V, so a picture driven out of it reaches nothing — proven with a
+  pure-RTL colour-bar generator that had no software, no DMA and no
+  stream to blame.
 - A floating ENABLE is a disable; a floating ARESETN is a permanent
   reset. Block designs tie silence to zero — audit every control input.
 - Never `catch` a connect. A swallowed wiring error costs a bench
