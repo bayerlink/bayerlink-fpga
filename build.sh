@@ -16,8 +16,9 @@
 # link's own pixel clock (148.5 for 1080p): the ISP rides the
 # receiver's domain, so a lower number here would silently ask the
 # generator for a pipeline too slow for the pixels arriving.
-#   MODE=720p60 ./build.sh                (raster only; the ISP's
-#                                            geometry is the design's)
+# A variant build is an EDIT to boards/<board>/design.json, not an
+# environment variable: a different raster is a different design, and
+# this way the bitstream corresponds to something you can diff.
 #
 # Needs: vivado on PATH, and the generators, PINNED:
 #
@@ -29,12 +30,19 @@
 # will not be what was measured here.
 # Also needs vivado-library/ and board-files/ beside this file; see the
 # README for the two clone commands.
+# WHICH BOARD is the only thing this script chooses. Everything else --
+# the output raster, the clock the ISP is cut for, whether the capture
+# path is built, the receiver's capacity -- is a property of a DESIGN,
+# and lives in boards/<board>/design.json where it can be diffed. A
+# shell default is not a record: it meant the bitstream on the bench
+# corresponded to an environment nobody wrote down.
 BOARD=${BOARD:-pynq-z2}
+read_build() { python3 -c "import json,sys;print(json.load(open('boards/$BOARD/design.json'))['build'][sys.argv[1]])" "$1"; }
 # The output raster. 1080p30 rides its own 74.25 MHz MMCM output and
 # GENLOCKS: rate and phase follow the stream, fps flows through, and
 # direct-to-glass is whole. 148.5-class modes (1080p60) free-run --
 # the store path shows each frame twice, as a standard TV signal.
-MODE=${MODE:-1080p30}
+MODE=$(read_build mode)
 # The ISP's geometry and depth belong to the DESIGN (gen/pipeline.json
 # owns them); the receiver aligns samples to that depth, so BITS is
 # READ from the description, never chosen here.
@@ -45,8 +53,8 @@ BITS=$(python3 -c 'import json; print(json.load(open("gen/pipeline.json"))["stre
 # and builds swung +0.16 to -0.54 on nothing. Generation margin, the
 # same idea as timing margin, one stage earlier. (Measured: +0.196
 # MET, repeatably, on the build this default comes from.)
-ISP_MHZ=${ISP_MHZ:-155}
-RX_FIFO=${RX_FIFO:-256}
+ISP_MHZ=$(read_build isp_mhz)
+RX_FIFO=$(read_build rx_fifo)
 # Include the link-judge capture path? It snapshots what ARRIVED at
 # the receiver, byte-exact, to compare against what was sent -- the
 # tap that proved this link bit-exact, and the only tool that can
@@ -57,7 +65,7 @@ RX_FIFO=${RX_FIFO:-256}
 # default: it costs a DMA, a clock converter, an interconnect port,
 # the consumer switch, and the thinnest timing path in the design.
 # Whether the board CAN is the board's to say, below.
-CAPTURE=${CAPTURE:-0}
+CAPTURE=$(read_build capture); [ "$CAPTURE" = "True" ] && CAPTURE=1 || CAPTURE=0
 
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here"
@@ -81,13 +89,14 @@ fi
 # reference by running into it, after synthesising everything above.
 echo "== block design checks"
 python3 scripts/checkbd.py "boards/$BOARD/bd.tcl"
+python3 scripts/checklicence.py
 
 echo "== receiver (np2hw bayerlink_in)"
 # --fifo-depth is PINNED, not left to the generator's default: the
 # verified bitstream was built at 256 and a different depth is a
 # different design.
 python3 gen/receiver.py --board "$BOARD" --fifo-depth "$RX_FIFO" \
-    --bits "$BITS"
+    --max-line-bytes "$(read_build max_line_bytes)" --bits "$BITS"
 
 echo "== ISP (revela pipeline, twin-verified before it emits)"
 python3 -m revela generate gen/pipeline.json \
@@ -100,24 +109,43 @@ echo "== display raster (np2hw scanout)"
 OUT_MHZ=$(python3 -c "from np2hw.video_out import mode_timing; \
 print(mode_timing('$MODE')['pixel_mhz'])")
 GENLOCK=$(python3 -c "print(1 if $OUT_MHZ < 100 else 0)")
-export OUT_MHZ
-# No --window: the raster's geometry IS the mode's active area, so the
-# mode is its one owner. (The ISP's geometry is the design's, in
-# gen/pipeline.json -- a different fact, deliberately independent: the
-# ISP takes what the header brings at run time.)
-python3 gen/scanout.py --mode "$MODE" \
+# No --window: the picture starts filling the mode's active area, and
+# where it sits after that is WRITTEN, not built -- the raster's own
+# geometry still comes from the mode table, its one owner. (The ISP's
+# geometry is the design's, in gen/pipeline.json -- a different fact,
+# deliberately independent: the ISP takes what the header brings at
+# run time.)
+python3 gen/scanout.py --board "$BOARD" --mode "$MODE" \
     $([ "$GENLOCK" = 1 ] && echo --genlock)
 
 echo "== output tee (np2hw)"
 python3 gen/tee.py
 python3 gen/ddc.py
 
+echo "== block design parameters, from the files that own them"
+# The block design used to be told its numbers through the environment,
+# with its own defaults beside each one in case it was not. Both are
+# gone: gen/params.py reads the design, the board and the ISP's own
+# published contract, and writes the single file bd.tcl sources. It runs
+# HERE, after the ISP, because the ISP's boundary is traced rather than
+# declared -- there is nothing to read until it has been built.
+python3 gen/params.py --board "$BOARD"
+
+echo "== pixel datapath (generated from design.json, widths checked)"
+python3 gen/netlist.py --board "$BOARD"
+
+# Every wire we draw between our OWN blocks, checked against the widths
+# those blocks actually have -- with the parameters this build passes
+# them. It runs HERE and not with the other structural checks because it
+# needs the generated RTL and the parameters: there is nothing to
+# measure until the blocks exist. np2hw refuses a mismatched edge inside
+# a composed core; this is the same refusal for the edges outside one,
+# where the block design would otherwise connect the low bits and issue
+# a warning that looks like all the others.
+python3 scripts/checknets.py "boards/$BOARD/bd.tcl"
+
 echo "== implementation"
 cd "boards/$BOARD"
-# Both build-time choices reach the block design the same way: the
-# sample width for the glue's parameter, and whether to build the
-# capture branch at all.
-export BITS CAPTURE
 vivado -mode batch -source bd.tcl
 vivado -mode batch -source impl_a.tcl
 vivado -mode batch -source impl_b.tcl

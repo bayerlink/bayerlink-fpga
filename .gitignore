@@ -1,4 +1,13 @@
+# GENERATED, and so not source. Every number in these is read from the
+# file that owns it -- the board, the design, or the ISP's own published
+# contract -- and build.sh regenerates all of them before Vivado starts.
+# Committed, they would be a second copy of facts that already have
+# owners, going stale in silence the first time someone edits an owner
+# and does not rebuild. That disagreement does not surface as an error:
+# a width mismatch in a block design is a CRITICAL WARNING and a quiet
+# connection of the low bits.
 hdl/generated/
+boards/*/generated/
 board-files
 vivado-library
 build/
@@ -9,6 +18,10 @@ out/
 *.hwh
 .Xil/
 NA/
+# dvi2rgb writes its timing tables beside the board while it elaborates
+# and removes them again. They exist only during a build, which is
+# exactly when someone is most likely to stage everything.
+boards/*/dgl_*.data
 clockInfo.txt
 tight_setup_hold_pins.txt
 .DS_Store

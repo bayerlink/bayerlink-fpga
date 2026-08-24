@@ -14,17 +14,45 @@ refusal (SLVERR while the file is armed) answered as NACK.
 
     python3 gen/ddc.py
 """
+import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 
-# The container raster, from the same numbers scanout and the bridge
-# use: 74.25 MHz, 2200x1125 total, 1920x1081 active.
-PCLK_10KHZ = 7425
-HACT, HBLANK = 1920, 280
-VACT, VBLANK = 1081, 44
-HSO, HSW = 88, 44          # hsync offset/width (2008-1920, 2052-2008)
-VSO, VSW = 3, 5            # vsync offset/width (1084-1081, 1089-1084)
+def container_timing(mode: str, board: str = "pynq-z2") -> dict:
+    """The advertised raster, DERIVED from the one mode table.
+
+    These seven numbers used to be written here as constants, with a
+    comment saying they were "the same numbers scanout and the bridge
+    use" -- which is a promise a comment cannot keep. They are the
+    link_mode's timing with ONE EXTRA ACTIVE LINE: the bayerlink
+    container is the payload with its header row above it, and that row
+    is why a source honouring this EDID sends 1081 lines and not 1080.
+
+    The vertical blanking shrinks by that line rather than the total
+    growing, because the total is what a source locks to.
+    """
+    from np2hw.video_out import mode_timing
+
+    t = mode_timing(mode)
+    vact = t["v_active"] + 1                       # + the header row
+    return {
+        "pclk_10khz": int(round(t["pixel_mhz"] * 100)),
+        "hact": t["h_active"], "hblank": t["h_total"] - t["h_active"],
+        "vact": vact, "vblank": t["v_total"] - vact,
+        "hso": t["hs_beg"] - t["h_active"], "hsw": t["hs_end"] - t["hs_beg"],
+        "vso": t["vs_beg"] - vact, "vsw": t["vs_end"] - t["vs_beg"],
+    }
+
+
+_T = container_timing(
+    json.loads((HERE / "boards" / "pynq-z2" / "design.json").read_text())
+    ["build"]["link_mode"])
+PCLK_10KHZ = _T["pclk_10khz"]
+HACT, HBLANK = _T["hact"], _T["hblank"]
+VACT, VBLANK = _T["vact"], _T["vblank"]
+HSO, HSW = _T["hso"], _T["hsw"]
+VSO, VSW = _T["vso"], _T["vsw"]
 
 
 def build_edid() -> bytes:
