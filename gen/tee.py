@@ -10,17 +10,46 @@ receives a partial frame.
 
     python3 gen/tee.py
 """
+import json
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 
+# The three flags that ride beside the pixels. tee_shim.v owns the
+# LAYOUT -- {sof, last, eol, rgb} -- and this is the only other place
+# that has to know what the flags cost.
+FLAG_BITS = 3
+
+
+def payload_bits() -> int:
+    """The tee's word: the ISP's TRACED output, plus the flags.
+
+    Read, never written. It was written -- 33, meaning a 30-bit RGB --
+    and stayed correct until the display curve began narrowing to eight
+    bits a channel. Nothing failed, which is the problem: the payload
+    sits in the low bits, so a 27-bit word into a 33-bit port
+    zero-extends and comes back truncated to the same value. It cost six
+    unused flip-flops twice over and 24 Kbit of block RAM in the grab
+    FIFO, and the first ISP to trace more than 30 bits would have had
+    its FLAGS cut off the top instead.
+    """
+    design = json.loads((HERE / "gen" / "pipeline.json").read_text())
+    contract = HERE / "hdl" / "generated" / f"{design['name']}_build.json"
+    if not contract.exists():
+        sys.exit(f"gen/tee.py: {contract.name} is missing -- generate the "
+                 "ISP first. The width this tee carries is the ISP's traced "
+                 "output, not a number this file may choose.")
+    outputs = json.loads(contract.read_text())["boundary"]["outputs"]
+    return int(next(iter(outputs.values()))["data_bits"]) + FLAG_BITS
+
 
 def main() -> None:
     from np2hw import cdc_fifo, skid, tee
-    # 33 bits: {sof, last, eol, rgb[29:0]} -- tee_shim.v owns the layout.
+    width = payload_bits()
     out = HERE / "hdl" / "generated"
     out.mkdir(exist_ok=True)
-    result = tee(33, module_name="isp_tee")
+    result = tee(width, module_name="isp_tee")
     (out / "isp_tee.v").write_text(result["verilog"] + "\n")
     # The grabber's elastic: the tee never stalls, so a tap's ready
     # must be as smooth as the stream -- the write engine's ready
@@ -28,7 +57,7 @@ def main() -> None:
     # branch. Two lines of buffering makes the tap point always
     # ready, the same way the display's crossing FIFO does for its
     # branch. Same proven gray-pointer FIFO, both clocks tied.
-    gfifo = cdc_fifo(33, addr_bits=12, module_name="grab_fifo")
+    gfifo = cdc_fifo(width, addr_bits=12, module_name="grab_fifo")
     (out / "grab_fifo.v").write_text(gfifo["verilog"] + "\n")
     # The skid in front of it is what terminates the READY CONE: every
     # traced core's in_ready is combinational from its downstream, so
@@ -38,10 +67,12 @@ def main() -> None:
     # (-0.557ns through seven blocks of ripple). One registered
     # boundary at the pipe's output ends the cone regardless of what
     # is wired downstream.
-    result = skid(33, module_name="isp_skid")
+    result = skid(width, module_name="isp_skid")
     (out / "isp_skid.v").write_text(result["verilog"] + "\n")
-    print("generated hdl/generated/isp_tee.v + isp_skid.v "
-          "(33-bit, frame-atomic, ready cone terminated)")
+    print(f"generated hdl/generated/isp_tee.v + isp_skid.v + "
+          f"grab_fifo.v ({width}-bit: the ISP's traced "
+          f"{width - FLAG_BITS} plus {FLAG_BITS} flags, frame-atomic, "
+          f"ready cone terminated)")
 
 
 if __name__ == "__main__":

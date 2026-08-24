@@ -39,6 +39,14 @@ module tee_shim #(
     output wire        torn_a,
     output wire        torn_b
 );
+    // Every width below is DATA_BITS + 3: the ISP's traced word plus
+    // the three flags. The skid was instantiated at a literal 33 and
+    // the FIFO took its default of the same, which is a 30-bit RGB
+    // from when the pipeline was 10-bit. Nothing failed, because the
+    // payload sits in the low bits and the extra ones zero-extend and
+    // truncate back -- so it read as working while carrying six dead
+    // bits through a 4096-deep block RAM, and it would have cut the
+    // flags off the top the first time an ISP traced wider than 30.
     wire [DATA_BITS+2:0] packed_in = {in_sof, in_last, in_eol, in_data};
     wire [DATA_BITS+2:0] a_packed, b_packed;
 
@@ -49,7 +57,7 @@ module tee_shim #(
     // ISP sees a flop whatever is wired past this point.
     wire [DATA_BITS+2:0] sk_data;
     wire        sk_valid, sk_ready;
-    isp_skid #(.W(33)) u_skid (
+    isp_skid #(.W(DATA_BITS + 3)) u_skid (
         .clk(clk), .rst(rst),
         .s_data(packed_in), .s_valid(in_valid), .s_ready(in_ready),
         .m_data(sk_data), .m_valid(sk_valid), .m_ready(sk_ready));
@@ -74,7 +82,7 @@ module tee_shim #(
     // dip tears the branch (bench-paid: DMAIntErr on every frame,
     // a sentinel buffer never written).
     wire [DATA_BITS+2:0] bq_data;
-    grab_fifo u_bfifo (
+    grab_fifo #(.W(DATA_BITS + 3)) u_bfifo (
         .wclk(clk), .wrst(rst),
         .in_data(b_packed), .in_valid(bt_valid), .in_ready(bt_ready),
         .rclk(clk), .rrst(rst),
