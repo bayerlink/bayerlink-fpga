@@ -3,7 +3,7 @@
   "name": "revela_isp_core",
   "description": "The board's display pipeline: pedestal off, illuminant balanced, Hamilton-Adams demosaic in its two streaming stages, colour matrix, display curve, and the mark. Geometry and CFA phase ride the bayerlink header, so this design carries them as stream context -- ports latched at each frame's start, never registers.",
   "stream": {
-    "bit_depth": 10,
+    "bit_depth": 12,
     "context": [
       "width",
       "height",
@@ -18,13 +18,13 @@
   "inputs": [
     {
       "name": "isp_in",
-      "description": "Raw Bayer from the bayerlink receiver, samples already aligned to this build's depth."
+      "description": "Raw Bayer from the bayerlink receiver. bit_depth above is the depth samples ARRIVE at here; the depth they arrived on the WIRE is the header's, run-time and any of 8/10/12/14/16, and the receiver has already scaled them to this one. Change the sensor, not this number."
     }
   ],
   "outputs": [
     {
       "name": "isp_out",
-      "description": "Tone-mapped RGB, three 10-bit channels in one word: R low, G mid, B high."
+      "description": "Tone-mapped RGB, three channels in one word: R low, G mid, B high. The word's width is TRACED, not declared -- each block's output is whatever its model produces, and that is the next block's input."
     }
   ],
   "nodes": [
@@ -56,12 +56,7 @@
     {
       "instance": "rgb_gamma",
       "block": "rgb_gamma",
-      "registers": {
-        "knots": {
-          "bits": 11
-        }
-      },
-      "description": "Display tone curve per channel, one shared knot table. knots bits = bit_depth + 1."
+      "description": "Display tone curve per channel, one shared knot table, one bit wider than the datapath."
     },
     {
       "instance": "logo",

@@ -26,12 +26,19 @@ def main() -> None:
     parser.add_argument("--board", required=True)
     parser.add_argument("--max-line-bytes", type=int, default=4096)
     parser.add_argument("--fifo-depth", type=int, default=1024)
-    # The depth samples LEAVE at. The header still owns what the sensor
-    # SENT; the receiver aligns it to this on the way out, so downstream
-    # the depth is a build fact. Must be the ISP's --bits and the block
-    # design's SW: build.sh owns the number and passes it to all three.
-    parser.add_argument("--bits", type=int, default=10,
-                        help="output depth; the ISP is built for this")
+    # The depth samples LEAVE at, and the ONLY depth that is a build
+    # fact. What the sensor SENT is the header's, run-time, any of
+    # 8/10/12/14/16 -- so a different sensor can be plugged in without
+    # rebuilding, and the receiver scales it to this on the way out.
+    #
+    # REQUIRED, with no default. The number has one owner, the design
+    # description's stream.bit_depth, and build.sh passes it here and to
+    # the block design from that one place. A default here would be a
+    # second owner that agrees until the day it quietly does not.
+    parser.add_argument("--bits", type=int, required=True,
+                        help="the depth samples leave at, which the ISP "
+                             "is built for; owned by the design "
+                             "description, never defaulted here")
     args = parser.parse_args()
 
     board = json.loads(
