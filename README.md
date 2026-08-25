@@ -59,13 +59,35 @@ that skips a generator fails on a missing file rather than quietly
 using a stale one. It runs:
 
 ```sh
+python3 scripts/checkbd.py boards/pynq-z2/bd.tcl   # seconds here, not 20 minutes there
+python3 scripts/checklicence.py
+
 python3 gen/receiver.py --board pynq-z2   # -> hdl/generated/bayerlink_rx.v
 python3 -m revela generate gen/pipeline.json --out hdl/generated --clock-mhz 155
-python3 gen/scanout.py --mode 1080p30 --genlock   # -> hdl/generated/scanout.v
+python3 gen/scanout.py --board pynq-z2 --mode 1080p30 --genlock
+python3 gen/tee.py                        # sized from the ISP's traced word
+python3 gen/ddc.py
+
+python3 gen/params.py  --board pynq-z2    # -> boards/<board>/generated/params.tcl
+python3 gen/netlist.py --board pynq-z2    # -> boards/<board>/generated/netlist.tcl
+python3 scripts/checknets.py boards/pynq-z2/bd.tcl
+
 cd boards/pynq-z2 && vivado -mode batch -source bd.tcl
 vivado -mode batch -source impl_a.tcl
 vivado -mode batch -source impl_b.tcl
+
+python3 scripts/checkhwh.py boards/pynq-z2/out/rx.hwh   # the design AS BUILT
 ```
+
+The parameters and the datapath are generated too, and that is the point
+of the ordering: `gen/params.py` runs AFTER the ISP because the ISP's
+boundary is **traced**, so there is nothing to read until it has been
+built. It reads three owners and no others -- the design
+(`gen/pipeline.json`), the target (`board.json`) and the ISP's own
+published contract -- and writes the single file `bd.tcl` sources.
+`bd.tcl` reads no environment and declares no defaults: a fact nobody set
+stops the build at once, rather than becoming a width mismatch that
+Vivado downgrades to a warning and a picture that is quietly wrong.
 
 The ISP is not scripted here: `gen/pipeline.json` is a revela pipeline
 description -- named block instances and the connections between their
@@ -113,9 +135,9 @@ the offset; the reader that judges it corrects for it.
 
 Measure it with the grabber and a known pattern: stream one of the
 protocol's test patterns from the source (`scripts/mkpattern.py`
-authors one AT YOUR PIPELINE'S OWN DEPTH; the built-in bayerlink
-patterns are 12-bit and a 10-bit ISP will refuse them, which looks
-like a geometry fault and is not), `grab.py` a frame, and read the
+authors one AT YOUR PIPELINE'S OWN DEPTH, which is the depth in
+gen/pipeline.json and nowhere else; a pattern authored at any other
+depth is refused in a way that looks like a geometry fault and is not), `grab.py` a frame, and read the
 roll off the known landmarks in the file. The display is direct and
 never carries the offset; only grabbed frames do, and the reader
 that judges them rolls it back. The compensation disappears
