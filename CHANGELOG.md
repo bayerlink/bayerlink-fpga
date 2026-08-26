@@ -11,7 +11,7 @@ Verilog, and a build from anything else is a different design.
 
 ## 0.1.0 — first tagged build
 
-Built with `np2hw==0.5.0`, `bayerlink==0.5.0`, `revela==0.2.0`.
+Built with `np2hw==0.5.1`, `bayerlink==0.5.0`, `revela==0.2.0`.
 
 Measured on the board: **WNS +0.047 ns MET, WHS +0.013 ns**, TNS and THS
 zero, `rx.bit` and `rx.hwh` written, and no critical-warning class absent
