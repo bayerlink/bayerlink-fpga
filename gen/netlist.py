@@ -91,10 +91,17 @@ def stream_groups(text: str, module: str, ports: dict) -> tuple:
         parts = attribute.split()
         if len(parts) != 3 or parts[0] != STREAM_BUS:
             continue                      # someone else's interface
-        _bus, bundle, logical = parts
+        _bus, _label, logical = parts
         if logical not in LOGICAL or port not in ports:
             continue
-        groups.setdefault(bundle, {})[LOGICAL[logical]] = ports[port]
+        # The GROUP is the port prefix. The interface label beside it may
+        # differ -- `in` and `out` are HDL reserved words and get renamed
+        # for the block design's benefit -- and design.json names ports,
+        # so the prefix is what has to match.
+        suffix = LOGICAL[logical]
+        if not port.endswith("_" + suffix):
+            continue
+        groups.setdefault(port[:-(len(suffix) + 1)], {})[suffix] = ports[port]
     out = {}
     for prefix, signals in groups.items():
         if set(signals) != set(BUNDLE):
@@ -125,8 +132,13 @@ def undeclared_streams(text: str, module: str, ports: dict) -> set:
         m = re.match(r"(.+?)_(valid|ready)$", name)
         if m:
             seen.setdefault(m.group(1), set()).add(m.group(2))
-    declared = {b for a, _ in _DECL.findall(port_list(text, module))
-                for b in [a.split()[1]] if a.split()[:1] == [STREAM_BUS]}
+    declared = set()
+    for attribute, port in _DECL.findall(port_list(text, module)):
+        parts = attribute.split()
+        if len(parts) == 3 and parts[0] == STREAM_BUS:
+            suffix = LOGICAL.get(parts[2], "")
+            if suffix and port.endswith("_" + suffix):
+                declared.add(port[:-(len(suffix) + 1)])
     return {p for p, sig in seen.items()
             if sig == {"valid", "ready"} and p not in declared}
 
@@ -145,6 +157,16 @@ def main() -> int:
                     "netlist is built at the widths it names")
 
     from checknets import module_ports, tcl_values          # one resolver, shared
+
+    # The bus definition the RTL's interface attributes name, written
+    # where bd.tcl points its IP catalogue. Without it Vivado reads an
+    # attribute naming a VLNV it cannot resolve and says so, once per
+    # port, as a CRITICAL WARNING -- and this board reads its critical
+    # warnings. np2hw renders it; nothing here restates the protocol.
+    from np2hw.ipxact import write_definitions
+
+    busdef = board_dir / "generated" / "busdef"
+    write_definitions(busdef)
 
     scalars = tcl_values("", params_file.read_text())
     active = {"capture": scalars.get("p_capture") == "1",

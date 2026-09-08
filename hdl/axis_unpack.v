@@ -13,17 +13,17 @@ module axis_unpack #(
     output wire        s_axis_tready,
     input  wire [31:0] s_axis_tdata,
     input  wire        s_axis_tlast,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out VALID" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream VALID" *)
     output wire        out_valid,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out READY" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream READY" *)
     input  wire        out_ready,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out DATA" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream DATA" *)
     output wire [SAMPLE_BITS-1:0] out_data,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out SOF" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream SOF" *)
     output wire        out_sof,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out EOL" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream EOL" *)
     output wire        out_eol,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out LAST" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream LAST" *)
     output wire        out_last
 );
     assign out_valid     = s_axis_tvalid;

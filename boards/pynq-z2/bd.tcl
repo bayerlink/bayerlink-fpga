@@ -22,7 +22,12 @@ source [file join $here generated params.tcl]
 
 create_project rx [file join $here build rx] -part $p_part -force
 set_property board_part $p_board_part [current_project]
-set_property ip_repo_paths [file join $root vivado-library] [current_project]
+# The vendor IP, and the bus definition our own stream ports name.
+# gen/netlist.py writes the second one; without it in the catalogue
+# Vivado cannot resolve the interface attributes and reports every
+# stream port as a critical warning.
+set_property ip_repo_paths [list [file join $root vivado-library] \
+    [file join $here generated busdef]] [current_project]
 update_ip_catalog
 
 add_files [file join $root hdl generated scanout.v] \

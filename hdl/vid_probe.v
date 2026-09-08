@@ -9,6 +9,12 @@ module vid_probe (
     input  wire        de,
     input  wire        vsync,
     input  wire [23:0] data,
+    // Not a stream: a level from the receiver, with no handshake.
+    // Said out loud because a bus definition in the catalogue makes
+    // `<name>_valid` inferable, and an inferred interface missing
+    // its READY is a critical warning about a port that was never
+    // one end of anything.
+    (* X_INTERFACE_IGNORE = "true" *)
     input  wire        rx_valid,
     output wire [15:0] status
 );

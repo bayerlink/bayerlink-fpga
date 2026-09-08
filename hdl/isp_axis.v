@@ -18,17 +18,17 @@ module isp_axis #(
 ) (
     input  wire        clk,
     input  wire        rst,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in VALID" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream VALID" *)
     input  wire        in_valid,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in READY" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream READY" *)
     output wire        in_ready,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in DATA" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream DATA" *)
     input  wire [DATA_BITS-1:0] in_data,   // R low, G mid, B high
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in SOF" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream SOF" *)
     input  wire        in_sof,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in EOL" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream EOL" *)
     input  wire        in_eol,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in LAST" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream LAST" *)
     input  wire        in_last,
     output wire        m_axis_tvalid,
     input  wire        m_axis_tready,

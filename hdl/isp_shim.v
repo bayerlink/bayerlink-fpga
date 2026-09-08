@@ -112,29 +112,29 @@ module revela_isp #(
     output wire        s_axi_rvalid,
     (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 s_axi RREADY" *)
     input  wire        s_axi_rready,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in VALID" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream VALID" *)
     input  wire        in_valid,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in READY" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream READY" *)
     output wire        in_ready,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in DATA" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream DATA" *)
     input  wire [SAMPLE_BITS-1:0] in_data,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in SOF" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream SOF" *)
     input  wire        in_sof,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in EOL" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream EOL" *)
     input  wire        in_eol,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in LAST" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in_stream LAST" *)
     input  wire        in_last,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out VALID" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream VALID" *)
     output wire        out_valid,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out READY" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream READY" *)
     input  wire        out_ready,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out DATA" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream DATA" *)
     output wire [DATA_BITS-1:0] out_data,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out SOF" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream SOF" *)
     output wire        out_sof,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out EOL" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream EOL" *)
     output wire        out_eol,
-    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out LAST" *)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 out_stream LAST" *)
     output wire        out_last,
     // Sticky: a line arrived wider than the pack was built for and was
     // cropped to it. VISIBLE and stated, rather than refused into a
