@@ -35,39 +35,68 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE / "scripts"))
-# The six signals an elastic stream is made of. Not an AXI-Stream and
-# not a Xilinx interface -- there is no IP-XACT abstraction for it, which
-# is why the block design wires it as six pins rather than one interface
-# net. So a stream is RECOGNISED here rather than declared: a port prefix
-# carrying all six is one, and a prefix carrying some of them is a
-# mistake worth naming.
-BUNDLE = ("valid", "ready", "data", "sof", "eol", "last")
+# The six signals an elastic stream is made of, read from np2hw rather
+# than restated -- np2hw emits the protocol and now publishes it, as an
+# IP-XACT bus definition rendered from the same declaration its Verilog
+# emitters attach to the ports.
+#
+# This file used to RECOGNISE a stream instead: a regex over port names,
+# calling a prefix a stream if it carried valid and ready. That was the
+# honest thing to do while there was nothing to read -- and it is exactly
+# the inference IP Integrator was making about AXI4-Lite before the ports
+# declared themselves. A module now says which of its ports form a
+# stream, and which end of it they are, so this reads the answer.
+from np2hw.ipxact import STREAM_RTL_VLNV, vlnv_string
+from np2hw.stream import STREAM_SIGNALS
+
+BUNDLE = tuple(s for s, *_ in STREAM_SIGNALS)
+LOGICAL = {logical: s for s, logical, *_ in STREAM_SIGNALS}
+STREAM_BUS = vlnv_string(STREAM_RTL_VLNV)
+
+# an attribute binds to the declaration that follows it
+_DECL = re.compile(
+    r'\(\*\s*X_INTERFACE_INFO\s*=\s*"([^"]*)"\s*\*\)\s*'
+    r'(?:input|output|inout)\s+(?:wire|reg)?\s*(?:signed\s*)?'
+    r'(?:\[[^\]]+\]\s*)?(\w+)')
 
 
-def stream_groups(ports: dict) -> dict:
-    """Every complete stream on a module, and which way it faces.
+def port_list(text: str, module: str) -> str:
+    """The module's own port list, delimited exactly as `module_ports`
+    delimits it -- the optional parameter list is part of the pattern,
+    so a module without one cannot match a `) (` further down the file,
+    and a `);` inside a comment above the module is never its end."""
+    m = re.search(r"^module\s+" + re.escape(module)
+                  + r"\s*(#\((.*?)\))?\s*\((.*?)\);", text, re.S | re.M)
+    return m.group(3) if m else ""
 
-    The DIRECTION is the block's own testimony: on a sink, data arrives
-    and ready leaves; on a source, the reverse. Reading it from the RTL
-    rather than from the port's name is what lets an edge that joins two
-    sources be refused -- a mistake no width check would ever see,
-    because both ends would be the same width.
+
+def stream_groups(text: str, module: str, ports: dict) -> tuple:
+    """Every stream a module DECLARES, and which way it faces.
+
+    The bundle comes from the module's own interface attributes, so a
+    port belongs to a stream because it says so -- not because its name
+    matched a pattern. That distinction is what stops `vid_data`,
+    `vid_de`, `vid_vsync` from looking like half a stream, and it is why
+    a module that speaks the protocol without declaring it is refused
+    here rather than silently skipped.
+
+    The DIRECTION is still the block's own testimony: on a sink, data
+    arrives and ready leaves; on a source, the reverse. Reading it from
+    the RTL is what lets an edge joining two sources be refused -- a
+    mistake no width check would ever see, because both ends would be
+    the same width.
     """
     groups: dict = {}
-    for name, (direction, width) in ports.items():
-        m = re.match(r"(.+?)_(valid|ready|data|sof|eol|last)$", name)
-        if m:
-            groups.setdefault(m.group(1), {})[m.group(2)] = (direction, width)
-    # The HANDSHAKE is what makes a stream. A port merely ending in
-    # `_data` is not half a stream -- the receiver's parallel video input
-    # is `vid_data`, `vid_de`, `vid_vsync`, and nothing about it is
-    # elastic. So a prefix is a candidate only once it carries valid AND
-    # ready, and a candidate missing any of the other four is the error
-    # worth naming.
-    candidates = {p: sig for p, sig in groups.items()
-                  if {"valid", "ready"} <= set(sig)}
+    for attribute, port in _DECL.findall(port_list(text, module)):
+        parts = attribute.split()
+        if len(parts) != 3 or parts[0] != STREAM_BUS:
+            continue                      # someone else's interface
+        _bus, bundle, logical = parts
+        if logical not in LOGICAL or port not in ports:
+            continue
+        groups.setdefault(bundle, {})[LOGICAL[logical]] = ports[port]
     out = {}
-    for prefix, signals in candidates.items():
+    for prefix, signals in groups.items():
         if set(signals) != set(BUNDLE):
             continue                      # incomplete; reported by the caller
         data_dir = signals["data"][0]
@@ -80,8 +109,26 @@ def stream_groups(ports: dict) -> dict:
             role = "malformed"
         out[prefix] = {"role": role, "signals": signals,
                        "width": signals["data"][1]}
-    return out, {p: sorted(sig) for p, sig in candidates.items()
+    return out, {p: sorted(sig) for p, sig in groups.items()
                  if set(sig) != set(BUNDLE)}
+
+
+def undeclared_streams(text: str, module: str, ports: dict) -> set:
+    """Prefixes that look like a stream but declare nothing.
+
+    The migration guard. A module carrying `<p>_valid` and `<p>_ready`
+    and saying nothing about them is the state this file used to infer
+    its way through; naming it is cheaper than inferring again.
+    """
+    seen: dict = {}
+    for name in ports:
+        m = re.match(r"(.+?)_(valid|ready)$", name)
+        if m:
+            seen.setdefault(m.group(1), set()).add(m.group(2))
+    declared = {b for a, _ in _DECL.findall(port_list(text, module))
+                for b in [a.split()[1]] if a.split()[:1] == [STREAM_BUS]}
+    return {p for p, sig in seen.items()
+            if sig == {"valid", "ready"} and p not in declared}
 
 
 def main() -> int:
@@ -127,7 +174,17 @@ def main() -> int:
                             "params.tcl does not set")
             values[pname] = scalars[var]
         ports[inst["name"]] = module_ports(sources[module], module, values)
-        streams[inst["name"]], partial = stream_groups(ports[inst["name"]])
+        missing = undeclared_streams(sources[module], module,
+                                     ports[inst["name"]])
+        if missing:
+            return fail(
+                f"{inst['name']} ({module}): port group(s) "
+                f"{sorted(missing)} carry a valid/ready handshake and "
+                f"declare no interface. Add the X_INTERFACE_INFO "
+                f"attributes naming {STREAM_BUS} -- a stream is stated "
+                "by the module that owns the ports, not guessed here")
+        streams[inst["name"]], partial = stream_groups(
+            sources[module], module, ports[inst["name"]])
         for prefix, signals in partial.items():
             return fail(f"{inst['name']} ({module}): port group {prefix!r} has "
                         f"{signals} -- a stream is all six of {list(BUNDLE)} or "

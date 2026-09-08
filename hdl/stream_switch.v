@@ -11,23 +11,41 @@ module stream_switch #(
     parameter SAMPLE_BITS = 16
 ) (
     input  wire        sel,        // 0: A (judge), 1: B (ISP)
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in VALID" *)
     input  wire        in_valid,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in READY" *)
     output wire        in_ready,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in DATA" *)
     input  wire [SAMPLE_BITS-1:0] in_data,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in SOF" *)
     input  wire        in_sof,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in EOL" *)
     input  wire        in_eol,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in LAST" *)
     input  wire        in_last,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a VALID" *)
     output wire        a_valid,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a READY" *)
     input  wire        a_ready,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a DATA" *)
     output wire [SAMPLE_BITS-1:0] a_data,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a SOF" *)
     output wire        a_sof,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a EOL" *)
     output wire        a_eol,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a LAST" *)
     output wire        a_last,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b VALID" *)
     output wire        b_valid,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b READY" *)
     input  wire        b_ready,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b DATA" *)
     output wire [SAMPLE_BITS-1:0] b_data,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b SOF" *)
     output wire        b_sof,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b EOL" *)
     output wire        b_eol,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b LAST" *)
     output wire        b_last
 );
     assign a_valid = in_valid & ~sel;

@@ -13,25 +13,43 @@ module tee_shim #(
 ) (
     input  wire        clk,
     input  wire        rst,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in VALID" *)
     input  wire        in_valid,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in READY" *)
     output wire        in_ready,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in DATA" *)
     input  wire [DATA_BITS-1:0] in_data,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in SOF" *)
     input  wire        in_sof,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in EOL" *)
     input  wire        in_eol,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 in LAST" *)
     input  wire        in_last,
     input  wire        en_a,       // direct display branch
     input  wire        en_b,       // framebuffer store branch
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a VALID" *)
     output wire        a_valid,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a READY" *)
     input  wire        a_ready,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a DATA" *)
     output wire [DATA_BITS-1:0] a_data,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a SOF" *)
     output wire        a_sof,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a EOL" *)
     output wire        a_eol,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 a LAST" *)
     output wire        a_last,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b VALID" *)
     output wire        b_valid,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b READY" *)
     input  wire        b_ready,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b DATA" *)
     output wire [DATA_BITS-1:0] b_data,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b SOF" *)
     output wire        b_sof,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b EOL" *)
     output wire        b_eol,
+    (* X_INTERFACE_INFO = "lanserge:interface:np2hw_stream_rtl:1.0 b LAST" *)
     output wire        b_last,
     // sticky until reset: that branch lost mid-frame beats -- the
     // tee never stalls, so a consumer that falls behind tears its
