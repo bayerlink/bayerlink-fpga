@@ -46,101 +46,11 @@ sys.path.insert(0, str(HERE / "scripts"))
 # the inference IP Integrator was making about AXI4-Lite before the ports
 # declared themselves. A module now says which of its ports form a
 # stream, and which end of it they are, so this reads the answer.
-from np2hw.ipxact import STREAM_RTL_VLNV, vlnv_string
-from np2hw.stream import STREAM_SIGNALS
-
-BUNDLE = tuple(s for s, *_ in STREAM_SIGNALS)
-LOGICAL = {logical: s for s, logical, *_ in STREAM_SIGNALS}
-STREAM_BUS = vlnv_string(STREAM_RTL_VLNV)
-
-# an attribute binds to the declaration that follows it
-_DECL = re.compile(
-    r'\(\*\s*X_INTERFACE_INFO\s*=\s*"([^"]*)"\s*\*\)\s*'
-    r'(?:input|output|inout)\s+(?:wire|reg)?\s*(?:signed\s*)?'
-    r'(?:\[[^\]]+\]\s*)?(\w+)')
-
-
-def port_list(text: str, module: str) -> str:
-    """The module's own port list, delimited exactly as `module_ports`
-    delimits it -- the optional parameter list is part of the pattern,
-    so a module without one cannot match a `) (` further down the file,
-    and a `);` inside a comment above the module is never its end."""
-    m = re.search(r"^module\s+" + re.escape(module)
-                  + r"\s*(#\((.*?)\))?\s*\((.*?)\);", text, re.S | re.M)
-    return m.group(3) if m else ""
-
-
-def stream_groups(text: str, module: str, ports: dict) -> tuple:
-    """Every stream a module DECLARES, and which way it faces.
-
-    The bundle comes from the module's own interface attributes, so a
-    port belongs to a stream because it says so -- not because its name
-    matched a pattern. That distinction is what stops `vid_data`,
-    `vid_de`, `vid_vsync` from looking like half a stream, and it is why
-    a module that speaks the protocol without declaring it is refused
-    here rather than silently skipped.
-
-    The DIRECTION is still the block's own testimony: on a sink, data
-    arrives and ready leaves; on a source, the reverse. Reading it from
-    the RTL is what lets an edge joining two sources be refused -- a
-    mistake no width check would ever see, because both ends would be
-    the same width.
-    """
-    groups: dict = {}
-    for attribute, port in _DECL.findall(port_list(text, module)):
-        parts = attribute.split()
-        if len(parts) != 3 or parts[0] != STREAM_BUS:
-            continue                      # someone else's interface
-        _bus, _label, logical = parts
-        if logical not in LOGICAL or port not in ports:
-            continue
-        # The GROUP is the port prefix. The interface label beside it may
-        # differ -- `in` and `out` are HDL reserved words and get renamed
-        # for the block design's benefit -- and design.json names ports,
-        # so the prefix is what has to match.
-        suffix = LOGICAL[logical]
-        if not port.endswith("_" + suffix):
-            continue
-        groups.setdefault(port[:-(len(suffix) + 1)], {})[suffix] = ports[port]
-    out = {}
-    for prefix, signals in groups.items():
-        if set(signals) != set(BUNDLE):
-            continue                      # incomplete; reported by the caller
-        data_dir = signals["data"][0]
-        ready_dir = signals["ready"][0]
-        if data_dir == "input" and ready_dir == "output":
-            role = "sink"
-        elif data_dir == "output" and ready_dir == "input":
-            role = "source"
-        else:
-            role = "malformed"
-        out[prefix] = {"role": role, "signals": signals,
-                       "width": signals["data"][1]}
-    return out, {p: sorted(sig) for p, sig in groups.items()
-                 if set(sig) != set(BUNDLE)}
-
-
-def undeclared_streams(text: str, module: str, ports: dict) -> set:
-    """Prefixes that look like a stream but declare nothing.
-
-    The migration guard. A module carrying `<p>_valid` and `<p>_ready`
-    and saying nothing about them is the state this file used to infer
-    its way through; naming it is cheaper than inferring again.
-    """
-    seen: dict = {}
-    for name in ports:
-        m = re.match(r"(.+?)_(valid|ready)$", name)
-        if m:
-            seen.setdefault(m.group(1), set()).add(m.group(2))
-    declared = set()
-    for attribute, port in _DECL.findall(port_list(text, module)):
-        parts = attribute.split()
-        if len(parts) == 3 and parts[0] == STREAM_BUS:
-            suffix = LOGICAL.get(parts[2], "")
-            if suffix and port.endswith("_" + suffix):
-                declared.add(port[:-(len(suffix) + 1)])
-    return {p for p, sig in seen.items()
-            if sig == {"valid", "ready"} and p not in declared}
+# Reading a module's ports and the streams it declares belongs to
+# the shared resolver, so this file and checknets.py cannot come
+# to different conclusions about the same RTL.
+from checknets import (BUNDLE, stream_groups,       # noqa: E402
+                       undeclared_streams)
 
 
 def main() -> int:
@@ -286,7 +196,14 @@ def main() -> int:
         lines.append(f"# {src} -> {dst}"
                      + (f"  ({edge['description']})" if edge.get("description")
                         else ""))
-        # the signal list comes from the protocol, not from here
+        # SIX WIRES, not one interface net, and that is deliberate. Both
+        # ends declare the same bus definition, so `connect_bd_intf_net`
+        # works and reads better -- but an interface net leaves no
+        # addressable net on the signals inside it, and this board TAPS
+        # five of them (isp/in_valid, in_ready, out_valid and the shim's
+        # pair) into the status word that says whether the pipeline is
+        # flowing. Tried 2026-09-08: the build fails at the first tap.
+        # Observability beat tidiness.
         lines.append("foreach s {" + " ".join(BUNDLE) + "} {")
         lines.append(f"{pad}    connect_bd_net [get_bd_pins {src}_$s] "
                      f"[get_bd_pins {dst}_$s]")
