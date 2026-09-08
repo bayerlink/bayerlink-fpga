@@ -38,7 +38,13 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
-BUNDLE = ("valid", "ready", "data", "sof", "eol", "last")
+# The stream's signals, from the generator that emits them. Restating
+# them here would put the protocol in two places, and this file exists to
+# catch exactly that kind of disagreement between one description and
+# another -- it should not be a source of one.
+from np2hw.stream import STREAM_SIGNALS
+
+BUNDLE = tuple(s for s, *_ in STREAM_SIGNALS)
 
 
 def module_ports(text: str, name: str, params: dict) -> dict:
@@ -177,7 +183,7 @@ def main(path: Path) -> int:
         if not (a.endswith("$s") or b.endswith("$s")
                 or a.endswith("$f") or b.endswith("$f"))]
     for a, b in re.findall(
-            r"foreach s \{valid ready data sof eol last\} \{\s*\n\s*"
+            r"foreach s \{" + " ".join(BUNDLE) + r"\} \{\s*\n\s*"
             r"connect_bd_net \[get_bd_pins ([\w/\$]+)\$s\] "
             r"\[get_bd_pins ([\w/\$]+)\$s\]", tcl):
         nets += [(a + sig, b + sig) for sig in BUNDLE]

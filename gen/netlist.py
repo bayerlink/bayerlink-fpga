@@ -286,7 +286,8 @@ def main() -> int:
         lines.append(f"# {src} -> {dst}"
                      + (f"  ({edge['description']})" if edge.get("description")
                         else ""))
-        lines.append("foreach s {valid ready data sof eol last} {")
+        # the signal list comes from the protocol, not from here
+        lines.append("foreach s {" + " ".join(BUNDLE) + "} {")
         lines.append(f"{pad}    connect_bd_net [get_bd_pins {src}_$s] "
                      f"[get_bd_pins {dst}_$s]")
         lines.append("}")
