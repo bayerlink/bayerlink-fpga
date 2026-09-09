@@ -9,6 +9,25 @@ versions** the recorded bitstream was built from, because the claim it
 makes is reproducibility: the pinned versions produce byte-identical
 Verilog, and a build from anything else is a different design.
 
+## 0.2.1
+
+Built with `np2hw==0.6.1`, `bayerlink==0.5.0`, `revela==0.2.0`.
+
+**The pinned install line resolves again.** 0.2.0 pinned `np2hw==0.6.0`,
+which was withdrawn from PyPI before it was announced; a burned version
+does not come back, so the documented `pip install` could not complete
+and the reproducible build this repository promises was not reproducible
+by anyone.
+
+The same generator ships as np2hw 0.6.1. **The pin moved and the design
+did not**: generating this pipeline under 0.6.0 and under 0.6.1 produces
+a byte-identical pack — Verilog, register map, SystemRDL, FuseSoC core
+and build manifest all compare equal. Between the two releases the only
+code that changed is `ipxact.py`, which emits IP-XACT XML rather than
+Verilog, plus one docstring. So the bitstream measured for 0.2.0 is the
+bitstream this pin builds; nothing about the board result below is
+restated on weaker evidence.
+
 ## 0.2.0
 
 Built with `np2hw==0.6.0`, `bayerlink==0.5.0`, `revela==0.2.0`.
