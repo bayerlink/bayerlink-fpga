@@ -10,7 +10,7 @@
 // exactly the bug this module exists to prevent.
 //
 // Run:  iverilog -g2012 -o /tmp/lr.vvp sim/tb_link_reset.v \
-//           hdl/link_reset.v && /tmp/lr.vvp
+//           bayerlink_fpga/hdl/link_reset.v && /tmp/lr.vvp
 `timescale 1ns/1ps
 module tb;
   reg stable_clk = 0;

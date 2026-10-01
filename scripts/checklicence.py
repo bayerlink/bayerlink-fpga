@@ -9,11 +9,9 @@ deliberately contributed under other terms, and that ambiguity is what a
 licence audit stops on. A file carrying the WRONG identifier is worse --
 it is a claim rather than a gap.
 
-The sibling Python projects read this identifier from their packaging
-metadata, so it has one owner there. This repository publishes no
-package, so the identifier is stated here instead -- once -- and the
-licence files that back it are checked to exist, so the claim and the
-texts cannot drift apart.
+The identifier is read from pyproject.toml's `license`, its one owner,
+as in the sibling Python projects; the licence files that back it are
+checked to exist, so the claim and the texts cannot drift apart.
 
     python3 scripts/checklicence.py
 """
@@ -22,6 +20,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
@@ -29,7 +28,7 @@ HERE = Path(__file__).resolve().parent.parent
 # Hardware, so the Apache grant carries Solderpad's exception for the
 # things a licence written for software does not cover -- making,
 # having made, and the silicon itself.
-LICENCE = "Apache-2.0 WITH SHL-2.1"
+LICENCE = tomllib.loads((HERE / "pyproject.toml").read_text())["project"]["license"]
 BACKING = ("LICENSE", "LICENSE-APACHE")
 SUFFIXES = (".py", ".v", ".sv", ".sh", ".tcl", ".xdc", ".c", ".h",
             ".core")

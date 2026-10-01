@@ -1,13 +1,42 @@
 # Changelog
 
-Notable changes to bayerlink-fpga — the reference receiver on real
-silicon: a TMDS front end, a generated ISP, and a display raster, on a
-PYNQ-Z2.
+Notable changes to bayerlink-fpga — the bayerlink receiver on real
+silicon: the generated receiver and its TMDS front ends. (Through 0.2.1 it also carried the PYNQ-Z2 board design: a
+generated ISP and a display raster.)
 
-This repository publishes no package. A tag here says which **generator
-versions** the recorded bitstream was built from, because the claim it
-makes is reproducibility: the pinned versions produce byte-identical
-Verilog, and a build from anything else is a different design.
+Up to 0.2.1 this repository published no package: a tag said which
+**generator versions** the recorded bitstream was built from, because the
+claim was reproducibility. From the next release it publishes
+`bayerlink-fpga`, the receiver's package, and the board design lives in
+revela.
+
+## Unreleased
+
+**The board design moved to revela; this repository became the receiver's
+package.** It keeps what any FPGA receiving bayerlink needs, and nothing
+that belongs to one design:
+
+- `bayerlink_fpga`, importable, in two layers: the receiver
+  (`receiver.py`, `ddc.py`, `hdl/`) and front ends (`frontends/dvi2rgb`).
+  `python3 -m bayerlink_fpga <front end> --out <build dir> --fifo-depth
+  ... --max-line-bytes ... --bits ... --link-mode ...` writes the
+  receiver's Verilog and a `receiver.tcl` a synthesis run sources. Nothing in it knows a board: a board's pins and its front-end
+  configuration live in that board's library.
+- The lane map moved from the board to the front end: it follows
+  dvi2rgb's bus order, so any board receiving through dvi2rgb inherits it.
+- The PYNQ-Z2 design -- block design, datapath, ISP pipeline, raster,
+  tee, bench scripts, clocking notes -- is `revela/boards/pynq_z2` in
+  revela, and builds there. Its generated Verilog is byte-identical to
+  this repository's 0.2.1 flow on the same generators.
+
+**The receiver is a library a design composes.** `modules.json` describes
+each module of the receiver as a block in revela's composite format, by
+its sources, parameters and interfaces, and each module's clock names the
+streams it drives and its reset, so a block design need not guess either.
+`judge.py` reads the GPIO fields by name from the `gpio_layout.json` built
+beside the bitstream, and refuses a layout whose checksum, built into the
+fabric, does not read back. `vid_probe`, whose word no design read, is
+retired.
 
 ## 0.2.1
 

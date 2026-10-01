@@ -12,14 +12,49 @@ Captures are aligned by discarding one DMA packet (the stream cannot
 be paused; the first packet starts mid-frame and ends at its tlast),
 then judged: every sample equal to pattern.counting, sof exactly once
 and first, eol on every line end. Four consecutive frames must pass.
+
+The design must include the capture path. Its GPIO fields are read by
+name from the gpio_layout.json its build wrote beside the bitstream:
+this script writes no bit position down, and refuses a layout whose
+checksum, built into the fabric, does not read back.
 """
 import argparse
+import json
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 from bayerlink import pattern
 from pynq import Overlay, allocate, MMIO
+
+
+def field(layout, gpio, name):
+    """(register offset, low bit, width) of one GPIO field, by name."""
+    for channel in layout[gpio]["channels"]:
+        if name in channel["fields"]:
+            f = channel["fields"][name]
+            return channel["offset"], f["lsb"], f["bits"]
+    raise SystemExit(f"{gpio} has no field {name!r} in this build -- is "
+                     "the capture path in it?")
+
+
+def verify(layout, overlay):
+    """Refuse a layout that is not the loaded bitstream's: every field the
+    build marked `constant` must read back the value the file states."""
+    for gpio, block in layout.items():
+        mmio = MMIO(overlay.ip_dict[gpio]["phys_addr"], 0x1000)
+        for channel in block["channels"]:
+            for name, f in channel["fields"].items():
+                if not f.get("constant"):
+                    continue
+                got = (mmio.read(channel["offset"]) >> f["lsb"]) \
+                    & ((1 << f["bits"]) - 1)
+                if got != f["value"]:
+                    raise SystemExit(
+                        f"gpio_layout.json is not this bitstream's: {gpio} "
+                        f"{name} reads 0x{got:08X}, the file says "
+                        f"0x{f['value']:08X}")
 
 
 def main() -> int:
@@ -30,7 +65,10 @@ def main() -> int:
     parser.add_argument("--frames", type=int, default=4)
     args = parser.parse_args()
 
+    layout = json.loads(Path(args.bit).with_name("gpio_layout.json")
+                        .read_text())
     overlay = Overlay(args.bit, download=True)
+    verify(layout, overlay)
     ctrl = MMIO(overlay.ip_dict["ctrl_gpio"]["phys_addr"], 0x1000)
     gpio = MMIO(overlay.ip_dict["status_gpio"]["phys_addr"], 0x1000)
     dma = MMIO(overlay.ip_dict["dma"]["phys_addr"], 0x1000)
@@ -40,16 +78,23 @@ def main() -> int:
 
     # Wait for the link, then ONE reset pulse with both clocks running:
     # the async crossings initialize only when both sides reset together.
+    # A header accepted is the receiver saying a bayerlink source is
+    # there.
+    at, lsb, _ = field(layout, "status_gpio", "hdr_valid")
     for _ in range(60):
-        if (gpio.read(0) >> 5) & 1:
+        if (gpio.read(at) >> lsb) & 1:
             break
         time.sleep(0.5)
     else:
-        print("no receiver activity: is the source streaming?")
+        print("no header accepted: is the source streaming?")
         return 2
-    ctrl.write(0, 1)
+    # The judge is the stream's consumer (consumer = 0); everything else
+    # in the word off, the broom pulsed.
+    at, broom, _ = field(layout, "ctrl_gpio", "broom")
+    field(layout, "ctrl_gpio", "consumer")
+    ctrl.write(at, 1 << broom)
     time.sleep(0.05)
-    ctrl.write(0, 0)
+    ctrl.write(at, 0)
     time.sleep(0.1)
 
     def packet():

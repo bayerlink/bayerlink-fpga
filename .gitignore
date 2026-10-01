@@ -26,3 +26,7 @@ clockInfo.txt
 tight_setup_hold_pins.txt
 .DS_Store
 __pycache__/
+
+# Packaging
+dist/
+*.egg-info/

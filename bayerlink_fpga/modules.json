@@ -1,0 +1,109 @@
+{
+  "blocks": {
+    "bayerlink_rx": {
+      "description": "The bayerlink receiver, generated for its capacity: parallel video in, one sample per beat out, the header's facts beside it.",
+      "vivado": {
+        "module": "bayerlink_rx"
+      },
+      "generated": [
+        "bayerlink_rx.v"
+      ]
+    },
+    "link_reset": {
+      "description": "Holds the pixel domain in reset while the link is down, released synchronously once the recovered clock has settled.",
+      "vivado": {
+        "module": "link_reset"
+      },
+      "sources": [
+        "hdl/link_reset.v"
+      ]
+    },
+    "rx_axis": {
+      "description": "The receiver's elastic stream dressed as AXI4-Stream: sample, eol and sof in one 32-bit word, a packet per frame.",
+      "vivado": {
+        "module": "rx_axis",
+        "interfaces": [
+          "m_axis"
+        ]
+      },
+      "sources": [
+        "hdl/rx_axis.v"
+      ],
+      "parameters": {
+        "SAMPLE_BITS": {
+          "description": "The width of one sample: the depth the receiver aligns every source to."
+        }
+      }
+    },
+    "axis_unpack": {
+      "description": "The inverse of rx_axis: the AXI4-Stream word back into the elastic stream.",
+      "vivado": {
+        "module": "axis_unpack",
+        "interfaces": [
+          "s_axis"
+        ]
+      },
+      "sources": [
+        "hdl/axis_unpack.v"
+      ],
+      "parameters": {
+        "SAMPLE_BITS": {
+          "description": "The width of one sample: the depth the receiver aligns every source to."
+        }
+      }
+    },
+    "stream_switch": {
+      "description": "One elastic stream, two consumers, a register choosing which.",
+      "vivado": {
+        "module": "stream_switch"
+      },
+      "sources": [
+        "hdl/stream_switch.v"
+      ],
+      "parameters": {
+        "SAMPLE_BITS": {
+          "description": "The width of one sample: the depth the receiver aligns every source to."
+        }
+      }
+    },
+    "axis_spy": {
+      "description": "A pass-through AXI4-Stream spy: who refuses, the producer or the consumer.",
+      "vivado": {
+        "module": "axis_spy",
+        "interfaces": [
+          "s_axis",
+          "m_axis"
+        ]
+      },
+      "sources": [
+        "hdl/axis_spy.v"
+      ],
+      "parameters": {
+        "DW": {
+          "description": "The stream's data width."
+        }
+      }
+    },
+    "ddc_phy": {
+      "description": "The DDC's pins: open-drain SDA, input-only SCL.",
+      "vivado": {
+        "module": "ddc_phy"
+      },
+      "sources": [
+        "hdl/ddc_phy.v"
+      ]
+    },
+    "ddc_slave": {
+      "description": "The DDC slave, generated: the receiver's own EDID at 0x50 and an AXI master at 0x37.",
+      "vivado": {
+        "module": "ddc_slave",
+        "interfaces": [
+          "M_AXI"
+        ]
+      },
+      "generated": [
+        "ddc_slave.v"
+      ]
+    }
+  }
+}

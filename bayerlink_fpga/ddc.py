@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright 2026 Serge Rabyking
 # SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 """Generate the DDC slave: this receiver's calling card and control port.
@@ -12,14 +11,13 @@ The same engine serves the register personality at 0x37: the ISP's
 whole register file, readable and writable across the display cable,
 refusal (SLVERR while the file is armed) answered as NACK.
 
-    python3 gen/ddc.py
+The advertised raster is the build's link mode; the board design wires
+the slave's AXI master to whatever register file it wants reachable.
 """
-import json
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent.parent
 
-def container_timing(mode: str, board: str = "pynq-z2") -> dict:
+def container_timing(mode: str) -> dict:
     """The advertised raster, DERIVED from the one mode table.
 
     These seven numbers used to be written here as constants, with a
@@ -45,17 +43,14 @@ def container_timing(mode: str, board: str = "pynq-z2") -> dict:
     }
 
 
-_T = container_timing(
-    json.loads((HERE / "boards" / "pynq-z2" / "design.json").read_text())
-    ["build"]["link_mode"])
-PCLK_10KHZ = _T["pclk_10khz"]
-HACT, HBLANK = _T["hact"], _T["hblank"]
-VACT, VBLANK = _T["vact"], _T["vblank"]
-HSO, HSW = _T["hso"], _T["hsw"]
-VSO, VSW = _T["vso"], _T["vsw"]
-
-
-def build_edid() -> bytes:
+def build_edid(link_mode: str) -> bytes:
+    """The receiver's own EDID, preferring the container of `link_mode`."""
+    t = container_timing(link_mode)
+    PCLK_10KHZ = t["pclk_10khz"]
+    HACT, HBLANK = t["hact"], t["hblank"]
+    VACT, VBLANK = t["vact"], t["vblank"]
+    HSO, HSW = t["hso"], t["hsw"]
+    VSO, VSW = t["vso"], t["vsw"]
     e = bytearray(128)
     e[0:8] = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00])
     # PnP id "BLK" -- three 5-bit letters, A=1
@@ -96,18 +91,15 @@ def build_edid() -> bytes:
     return bytes(e)
 
 
-def main() -> None:
+def generate(out: Path, link_mode: str) -> str:
+    """Write ddc_slave.v and edid.bin into `out`; return a one-line report."""
     from np2hw import ddc_slave
-    out = HERE / "hdl" / "generated"
-    out.mkdir(exist_ok=True)
-    edid = build_edid()
+    out.mkdir(parents=True, exist_ok=True)
+    edid = build_edid(link_mode)
     result = ddc_slave(reg_addr7=0x37, edid=edid, edid_addr7=0x50)
     (out / "ddc_slave.v").write_text(result["verilog"] + "\n")
     (out / "edid.bin").write_bytes(edid)
-    print(f"ddc_slave.v: regs at 0x37, EDID at 0x50 "
-          f"({len(edid)} bytes, checksum ok, "
-          f"preferred {HACT}x{VACT}@30)")
-
-
-if __name__ == "__main__":
-    main()
+    t = container_timing(link_mode)
+    return (f"ddc_slave.v: regs at 0x37, EDID at 0x50 "
+            f"({len(edid)} bytes, checksum ok, "
+            f"preferred {t['hact']}x{t['vact']}@30)")

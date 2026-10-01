@@ -28,6 +28,10 @@ module link_reset #(
     parameter SETTLE_BITS = 12
 ) (
     input  wire       stable_clk,   // a clock that keeps running (FCLK0)
+    // rst_pix is RELEASED on pix_clk (asserted at once, let go on an
+    // edge), which is what its sinks need of it. Said here, or a block
+    // design takes it for an asynchronous source and warns on every sink.
+    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 pix_clk CLK", X_INTERFACE_PARAMETER = "ASSOCIATED_RESET rst_pix" *)
     input  wire       pix_clk,      // the recovered one, which does not
     input  wire       locked_a,     // dvi2rgb's lock: ASYNCHRONOUS
     input  wire       soft_rst,     // the broom, still honoured

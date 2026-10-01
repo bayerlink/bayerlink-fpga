@@ -7,7 +7,9 @@
 module axis_unpack #(
     parameter SAMPLE_BITS = 16
 ) (
+    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK", X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s_axis:out_stream, ASSOCIATED_RESET rst" *)
     input  wire        clk,
+    (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 rst RST", X_INTERFACE_PARAMETER = "POLARITY ACTIVE_HIGH" *)
     input  wire        rst,
     input  wire        s_axis_tvalid,
     output wire        s_axis_tready,
