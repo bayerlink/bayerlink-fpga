@@ -1,7 +1,0 @@
-{
-  "description": "Digilent's dvi2rgb on a 7-series part: TMDS decoded in the fabric (ISERDESE2, IDELAYE2, an MMCM), parallel video out. Needs Digilent's vivado-library in the IP catalogue and a 200 MHz reference for its IDELAYCTRL.",
-  "lane_map": [1, 2, 0],
-  "lane_map_note": "Which video lane carries container byte 0, 1, 2 (lane 0 is vid_data[23:16]). Solved 2026-08-12 on a PYNQ-Z2 with the picam2hdmi source, counting + checker patterns. It follows this front end's bus order rather than the board, so it is expected to hold on any board receiving through dvi2rgb; PYNQ-Z2 is the only one measured.",
-  "vsync_active_high": true,
-  "refclk_mhz": 200
-}

@@ -9,12 +9,14 @@ of [picam2hdmi](https://github.com/bayerlink/picam2hdmi) (the source
 instrument) and [bayertap](https://github.com/bayerlink/bayertap) (the
 receiver's toolbox on Linux).
 
-The receiver core is **generated, not written**: `np2hw.video_in.
-bayerlink_in()` emits it, held bit-exact against the reference codec in
-simulation ([np2hw](https://github.com/lanserge/np2hw)). This repo adds
-what any board needs around it, and nothing that belongs to one board
-or design: the generic Verilog around the receiver, the TMDS front ends,
-and the judgement harness that closes the loop on silicon.
+The receiver core is `bayerlink_fpga/hdl/bayerlink_in.v`, a Verilog file
+sized by parameters; the protocol's tables it reads are generated from
+the reference codec, so it restates none of them. `tests/` holds it
+bit-exact against that codec in simulation (`pytest`, with iverilog and
+Verilator on the path). Around it is what any board needs, and nothing
+that belongs to one board or design: the generic Verilog around the
+receiver, the TMDS front ends, and the judgement harness that closes the
+loop on silicon.
 
 Designs that USE the receiver live with those designs. The
 [revela](https://github.com/lanserge/revela) ISP on a PYNQ-Z2 -- camera
@@ -45,52 +47,62 @@ bayerlink_fpga/
   modules.json                that Verilog, one block per module, for a
                               design to instantiate (revela's library
                               format: its sources, parameters, interfaces)
-  frontends/<name>/           cable to parallel video: frontend.json (the
-                              lane map, vsync polarity) and frontend.tcl
-                              (what its vendor IP needs at synthesis)
+  frontends/hdmi_rx.json      cable to parallel video: the block and its
+                              implementations, each stating its lane map
+                              and vsync polarity
 ```
 
-Every front end offers the same pins -- pixel clock, lock, data enable,
-vsync, 24 data bits -- so neither the receiver nor a design above it
-changes when the front end does. Nothing here knows a board: which front
+Every implementation of `hdmi_rx` offers the block's ports -- pixel
+clock, lock, data enable, syncs, 24 data bits -- so neither the receiver
+nor a design above it changes when the implementation does. Nothing here knows a board: which front
 end a board's jack uses, how it is configured there and which pins it
 lands on belong to that board's own library, as one reusable block per
 jack (revela's PYNQ-Z2 has `hdmi_in`), so every design on the board
 shares it.
 
-| front end | what | lane map | measured on |
+| implementation | what | lane map | measured on |
 |-----------|------|----------|-------------|
 | `dvi2rgb` | Digilent's TMDS decoder on 7-series (ISERDESE2, IDELAYE2, MMCM) | (1, 2, 0) | PYNQ-Z2: 4/4 frames bit-exact, framing exact (2026-08-12) |
 
 The lane map is a fact about a PLATFORM PAIR (scanout + receiver), solved
 once with the protocol's test patterns: `counting` for the fingerprint,
 `checker` to break the byte-0/1 tie that counting cannot see. It follows
-the front end's bus order, so it lives with the front end; PYNQ-Z2 is
-the only board it has been measured on. A new board with a known front
-end needs pins and a judged capture; a new kind of HDMI input (a
-receiver chip, another FPGA family) is a new front end -- see the
-`sponsorable` label.
+the implementation's bus order, so it is that implementation's fact;
+PYNQ-Z2 is the only board it has been measured on. A new board with a
+known implementation needs pins and a judged capture; a new kind of HDMI
+input (a receiver chip, another FPGA family) is a new implementation of
+`hdmi_rx` -- see the `sponsorable` label.
 
 ## Use it from a board design
 
-```sh
-pip install bayerlink-fpga
-python3 -m bayerlink_fpga bayerlink_fpga.frontends.dvi2rgb --out <build dir> \
-    --fifo-depth 256 --max-line-bytes 4096 --bits 12 --link-mode 1080p30
+A board's jack fills a node with `hdmi_rx`; a design names the receiver
+and its DDC slave as leaves and sets them. The receiver's lane order and
+vsync polarity are assigned from the front end's facts, its capacity and
+output depth from the design's own settings:
+
+```json
+"front": {"block": "bayerlink_fpga.frontends.hdmi_rx",
+          "build": {"implementation": "'dvi2rgb'"}},
+"blrx":  {"block": "bayerlink_fpga.receiver:bayerlink_in",
+          "build": {"lane_map": "front.lane_map",
+                    "vsync_active_high": "front.vsync_active_high",
+                    "fifo_depth": 256, "max_line_bytes": 4096, "bits": 12}},
+"ddc":  {"block": "bayerlink_fpga.ddc:ddc_slave",
+         "build": {"link_mode": "'1080p30'"}}
 ```
 
 The build fixes capacity and the depth samples leave at, which the
 design consuming them owns; the header owns everything else, per frame.
-It writes the generated Verilog -- `bayerlink_rx.v`, `ddc_slave.v` -- and
-the EDID it serves, `edid.bin`, to `<build dir>/hdl`, and `<build dir>/generated/receiver.tcl`, which a
-synthesis run sources for `bayerlink_frontend_synth_prep <ip repo>`:
-whatever the front end's vendor IP expects beside a batch run.
+Each leaf publishes every port of its module, so the design is wired by
+that list; the EDID the DDC slave serves is its own
+ROM. The receiver's hand-written modules -- the link
+reset and the capture path's AXIS dressing -- are blocks in
+`modules.json`, each declaring its ports.
 
-A design instantiates the receiver's modules by their blocks in
-`modules.json` (`bayerlink_fpga.modules:bayerlink_rx` and the rest) and
-wires them. revela's `revela/boards/pynq_z2` is the worked example: its
-`hdmi_in.json` builds and configures the front end and pins the jack, and
-its `pynq_demo.json` wires the receiver behind it.
+revela's `revela/boards/pynq_z2` is the worked example: its `hdmi_in.json`
+fills and configures the front end, pins the jack and passes the front
+end's facts on, and its
+`pynq_demo.json` wires the receiver behind it.
 
 ## Judge
 
@@ -175,7 +187,7 @@ Same licence, same reasoning, as the rest of this ecosystem's RTL.
 
 Two boundary facts worth knowing:
 
-- The receiver core generated at build time is **np2hw's output**, and
+- The DDC slave generated at build time is **np2hw's output**, and
   np2hw's licence carries an Output Exception: what the tool writes
   into your design is not covered by np2hw's licence and may be used
   under any terms you choose. Nothing about your bitstream is

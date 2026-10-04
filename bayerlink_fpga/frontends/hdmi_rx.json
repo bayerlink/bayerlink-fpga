@@ -1,0 +1,40 @@
+{
+  "blocks": {
+    "hdmi_rx": {
+      "description": "An HDMI/DVI receiver: a TMDS link in, parallel video out -- pixel clock, lock, data enable, syncs, 24 data bits. Every implementation offers these same ports, so the bayerlink receiver and the designs above it do not change when it does. How it is configured on a board, and which pins it lands on, is that board's.",
+      "parameters": {
+        "implementation": {
+          "default": "'dvi2rgb'",
+          "description": "Which implementation fills this block."
+        }
+      },
+      "inputs": [
+        {"name": "TMDS", "bus": "tmds", "description": "The link, from the jack's pins."},
+        {"name": "refclk", "description": "The reference clock the implementation calibrates its input delays with; its frequency is the implementation's fact refclk_mhz."},
+        {"name": "rst", "description": "Asynchronous, active high."}
+      ],
+      "outputs": [
+        {"name": "pclk", "description": "The clock recovered from the link: it stops when the cable is pulled."},
+        {"name": "locked"},
+        {"name": "de"},
+        {"name": "hsync"},
+        {"name": "vsync"},
+        {"name": "data", "width": 24, "description": "Lane 0 is data[23:16], lane 1 [15:8], lane 2 [7:0]."}
+      ],
+      "implementations": {
+        "dvi2rgb": {
+          "description": "Digilent's dvi2rgb on a 7-series part: TMDS decoded in the fabric (ISERDESE2, IDELAYE2, an MMCM). Needs Digilent's vivado-library in the IP catalogue. Lane map solved 2026-08-12 on a PYNQ-Z2 with the picam2hdmi source, counting and checker patterns: it follows this IP's bus order, not the board, so it holds on any board receiving through dvi2rgb.",
+          "vivado": {"ip": "digilentinc.com:ip:dvi2rgb"},
+          "config": {"kEmulateDDC": "'false'", "kAddBUFG": "'true'"},
+          "ports": {
+            "refclk": "RefClk", "rst": "aRst", "pclk": "PixelClk",
+            "locked": "aPixelClkLckd", "de": "vid_pVDE", "hsync": "vid_pHSync",
+            "vsync": "vid_pVSync", "data": "vid_pData"
+          },
+          "tie": {"pRst": 0},
+          "facts": {"lane_map": [1, 2, 0], "vsync_active_high": 1, "refclk_mhz": 200}
+        }
+      }
+    }
+  }
+}

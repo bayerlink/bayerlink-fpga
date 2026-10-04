@@ -14,9 +14,6 @@ refusal (SLVERR while the file is armed) answered as NACK.
 The advertised raster is the build's link mode; the board design wires
 the slave's AXI master to whatever register file it wants reachable.
 """
-from pathlib import Path
-
-
 def container_timing(mode: str) -> dict:
     """The advertised raster, DERIVED from the one mode table.
 
@@ -91,15 +88,16 @@ def build_edid(link_mode: str) -> bytes:
     return bytes(e)
 
 
-def generate(out: Path, link_mode: str) -> str:
-    """Write ddc_slave.v and edid.bin into `out`; return a one-line report."""
-    from np2hw import ddc_slave
-    out.mkdir(parents=True, exist_ok=True)
-    edid = build_edid(link_mode)
-    result = ddc_slave(reg_addr7=0x37, edid=edid, edid_addr7=0x50)
-    (out / "ddc_slave.v").write_text(result["verilog"] + "\n")
-    (out / "edid.bin").write_bytes(edid)
-    t = container_timing(link_mode)
-    return (f"ddc_slave.v: regs at 0x37, EDID at 0x50 "
-            f"({len(edid)} bytes, checksum ok, "
-            f"preferred {t['hact']}x{t['vact']}@30)")
+def ddc_slave(link_mode: str) -> dict:
+    """The DDC slave: this receiver's EDID at 0x50, its registers at 0x37.
+
+    A leaf a design names (`bayerlink_fpga.ddc:ddc_slave`) with the raster
+    the EDID advertises. Returns np2hw's result, every port published; the
+    EDID is the module's own ROM.
+    """
+    from np2hw import ddc_slave as generate_ddc
+    return generate_ddc(reg_addr7=0x37, edid=build_edid(link_mode),
+                        edid_addr7=0x50)
+
+
+ddc_slave.leaf = True

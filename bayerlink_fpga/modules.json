@@ -1,16 +1,33 @@
 {
   "blocks": {
-    "bayerlink_rx": {
-      "description": "The bayerlink receiver, generated for its capacity: parallel video in, one sample per beat out, the header's facts beside it.",
-      "vivado": {
-        "module": "bayerlink_rx"
-      },
-      "generated": [
-        "bayerlink_rx.v"
-      ]
-    },
     "link_reset": {
       "description": "Holds the pixel domain in reset while the link is down, released synchronously once the recovered clock has settled.",
+      "inputs": [
+        {
+          "name": "stable_clk"
+        },
+        {
+          "name": "pix_clk"
+        },
+        {
+          "name": "locked_a"
+        },
+        {
+          "name": "soft_rst"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "rst_pix"
+        },
+        {
+          "name": "link_up"
+        },
+        {
+          "name": "loss_count",
+          "width": 8
+        }
+      ],
       "vivado": {
         "module": "link_reset"
       },
@@ -20,11 +37,36 @@
     },
     "rx_axis": {
       "description": "The receiver's elastic stream dressed as AXI4-Stream: sample, eol and sof in one 32-bit word, a packet per frame.",
+      "inputs": [
+        {
+          "name": "clk"
+        },
+        {
+          "name": "rst"
+        },
+        {
+          "name": "in",
+          "width": "SAMPLE_BITS",
+          "stream": [
+            "sof",
+            "eol",
+            "last"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "m_axis",
+          "width": 32,
+          "bus": "axis",
+          "signals": [
+            "tkeep",
+            "tlast"
+          ]
+        }
+      ],
       "vivado": {
-        "module": "rx_axis",
-        "interfaces": [
-          "m_axis"
-        ]
+        "module": "rx_axis"
       },
       "sources": [
         "hdl/rx_axis.v"
@@ -37,11 +79,35 @@
     },
     "axis_unpack": {
       "description": "The inverse of rx_axis: the AXI4-Stream word back into the elastic stream.",
+      "inputs": [
+        {
+          "name": "clk"
+        },
+        {
+          "name": "rst"
+        },
+        {
+          "name": "s_axis",
+          "width": 32,
+          "bus": "axis",
+          "signals": [
+            "tlast"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "width": "SAMPLE_BITS",
+          "stream": [
+            "sof",
+            "eol",
+            "last"
+          ]
+        }
+      ],
       "vivado": {
-        "module": "axis_unpack",
-        "interfaces": [
-          "s_axis"
-        ]
+        "module": "axis_unpack"
       },
       "sources": [
         "hdl/axis_unpack.v"
@@ -54,6 +120,40 @@
     },
     "stream_switch": {
       "description": "One elastic stream, two consumers, a register choosing which.",
+      "inputs": [
+        {
+          "name": "sel"
+        },
+        {
+          "name": "in",
+          "width": "SAMPLE_BITS",
+          "stream": [
+            "sof",
+            "eol",
+            "last"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "a",
+          "width": "SAMPLE_BITS",
+          "stream": [
+            "sof",
+            "eol",
+            "last"
+          ]
+        },
+        {
+          "name": "b",
+          "width": "SAMPLE_BITS",
+          "stream": [
+            "sof",
+            "eol",
+            "last"
+          ]
+        }
+      ],
       "vivado": {
         "module": "stream_switch"
       },
@@ -68,12 +168,40 @@
     },
     "axis_spy": {
       "description": "A pass-through AXI4-Stream spy: who refuses, the producer or the consumer.",
+      "inputs": [
+        {
+          "name": "clk"
+        },
+        {
+          "name": "rst"
+        },
+        {
+          "name": "s_axis",
+          "width": "DW",
+          "bus": "axis",
+          "signals": [
+            "tkeep",
+            "tlast"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "m_axis",
+          "width": "DW",
+          "bus": "axis",
+          "signals": [
+            "tkeep",
+            "tlast"
+          ]
+        },
+        {
+          "name": "status",
+          "width": 16
+        }
+      ],
       "vivado": {
-        "module": "axis_spy",
-        "interfaces": [
-          "s_axis",
-          "m_axis"
-        ]
+        "module": "axis_spy"
       },
       "sources": [
         "hdl/axis_spy.v"
@@ -86,23 +214,31 @@
     },
     "ddc_phy": {
       "description": "The DDC's pins: open-drain SDA, input-only SCL.",
+      "inputs": [
+        {
+          "name": "scl_io"
+        },
+        {
+          "name": "sda_pull"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "sda_io",
+          "inout": true
+        },
+        {
+          "name": "scl_i"
+        },
+        {
+          "name": "sda_i"
+        }
+      ],
       "vivado": {
         "module": "ddc_phy"
       },
       "sources": [
         "hdl/ddc_phy.v"
-      ]
-    },
-    "ddc_slave": {
-      "description": "The DDC slave, generated: the receiver's own EDID at 0x50 and an AXI master at 0x37.",
-      "vivado": {
-        "module": "ddc_slave",
-        "interfaces": [
-          "M_AXI"
-        ]
-      },
-      "generated": [
-        "ddc_slave.v"
       ]
     }
   }
