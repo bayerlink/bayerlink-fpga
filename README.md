@@ -108,19 +108,28 @@ end's facts on, and its
 
 Build a design with the capture path in -- revela's PYNQ-Z2 design with
 its `capture` parameter set to 1 in `pynq_demo.json` -- stream the
-counting pattern at the receiver (picam2hdmi: `counting 512x240` at
-`1280x720@60`), copy `rx.bit`, `rx.hwh` and the `gpio_layout.json` built
-beside them, with `scripts/judge.py`, to the board (PYNQ image), and:
+counting pattern at the receiver, in the mode its EDID offers (picam2hdmi:
+`counting 512x240` in the design's link mode plus its header row,
+`1920x1081@30` for revela's default), copy `rx.bit` and the
+`gpio_layout.json`, `address_map.json` and `clocks.json` built beside it,
+with `scripts/judge.py` and revela's `bench/load.py`, to the board (PYNQ
+image), and:
 
 ```sh
+python3 load.py --bit rx.bit
 python3 judge.py --bit rx.bit --width 512 --height 240
 ```
+
+The judge programs nothing: it judges the bitstream `load.py` loaded,
+and the layout checksum is what says the two are the same build.
 
 Done means what it means everywhere in this ecosystem: every sample and
 every framing flag equal to what the reference codec says, consecutively
 (`--frames N` frames in a row, 4 by default). The judge reads every GPIO
 field by name from that layout, and refuses one whose checksum, built
-into the fabric, does not read back.
+into the fabric, does not read back; it finds every register through the
+address map, since the design's own bus places them and the `.hwh` cannot
+see where.
 
 The receiver is the protocol's version 2: the header is parsed in
 fabric and OWNS depth and geometry per frame — all five packed
