@@ -155,8 +155,14 @@ Lessons this repo already paid for, so you do not have to:
 - Absent `tkeep` means all-bytes-invalid to an AXI DMA: it accepts the
   stream, writes none of it, and raises no error.
 
-- dvi2rgb's `kClkRange` follows the clock CONSTRAINT (148.5 MHz on the
-  PYNQ-Z2, as its base overlay ships), not the actual link rate.
+- dvi2rgb's `kClkRange` follows the link rate, and the front end works it
+  out from the `link_khz` it is given: the range keeps the MMCM's VCO in
+  its specification and changes nothing else, the serial clock being five
+  times the link clock whatever it is. The board's base overlay runs range
+  1 at 74.25 MHz, which puts the VCO at 371 MHz, below its floor, and makes
+  the design constrain the link at 148.5 MHz so that design-rule checks
+  pass; range 2 with the link constrained at its own 74.25 MHz receives
+  30/30 frames bit-exact.
 
 - Captures race a continuous stream: discard one packet to align on a
   frame boundary, then judge.

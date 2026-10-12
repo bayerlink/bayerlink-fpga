@@ -6,6 +6,9 @@
         "implementation": {
           "default": "'dvi2rgb'",
           "description": "Which implementation fills this block."
+        },
+        "link_khz": {
+          "description": "The link's pixel clock, in kHz: the rate the source sends, which the implementation's clocking is set for."
         }
       },
       "inputs": [
@@ -23,16 +26,19 @@
       ],
       "implementations": {
         "dvi2rgb": {
-          "description": "Digilent's dvi2rgb on a 7-series part: TMDS decoded in the fabric (ISERDESE2, IDELAYE2, an MMCM). Needs Digilent's vivado-library in the IP catalogue. Lane map solved 2026-08-12 on a PYNQ-Z2 with the picam2hdmi source, counting and checker patterns: it follows this IP's bus order, not the board, so it holds on any board receiving through dvi2rgb.",
+          "description": "Digilent's dvi2rgb on a 7-series part: TMDS decoded in the fabric (ISERDESE2, IDELAYE2, an MMCM). Needs Digilent's vivado-library in the IP catalogue. Lane map solved 2026-08-12 on a PYNQ-Z2 with the picam2hdmi source, counting and checker patterns: it follows this IP's bus order, not the board, so it holds on any board receiving through dvi2rgb. kClkRange follows the link: its MMCM multiplies the link clock by 5 x kClkRange and divides by kClkRange, so the five-times serial clock is the same whatever the range, and the range only keeps the VCO inside its 600-1200 MHz specification -- range 1 at a 74.25 MHz link would run it at 371 MHz. Range 2 at 74.25 MHz judged 30/30 frames bit-exact on the PYNQ-Z2 (2026-10-09). Below 25 MHz it has no range.",
           "vivado": {"ip": "digilentinc.com:ip:dvi2rgb"},
-          "config": {"kEmulateDDC": "'false'", "kAddBUFG": "'true'"},
+          "config": {
+            "kEmulateDDC": "'false'", "kAddBUFG": "'true'",
+            "kClkRange": "1 if link_khz >= 120000 else 2 if link_khz >= 60000 else 3 if link_khz >= 40000 else 4 if link_khz >= 30000 else 5"
+          },
           "ports": {
             "refclk": "RefClk", "rst": "aRst", "pclk": "PixelClk",
             "locked": "aPixelClkLckd", "de": "vid_pVDE", "hsync": "vid_pHSync",
             "vsync": "vid_pVSync", "data": "vid_pData"
           },
           "tie": {"pRst": 0},
-          "facts": {"lane_map": [1, 2, 0], "vsync_active_high": 1, "refclk_mhz": 200}
+          "facts": {"lane_map": [1, 2, 0], "vsync_active_high": 1, "refclk_mhz": 200, "min_link_khz": 25000}
         }
       }
     }

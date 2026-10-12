@@ -15,7 +15,7 @@ The advertised raster is the build's link mode; the board design wires
 the slave's AXI master to whatever register file it wants reachable.
 """
 def container_timing(mode: str) -> dict:
-    """The advertised raster, DERIVED from the one mode table.
+    """The advertised raster, DERIVED from bayerlink's rasters.
 
     These seven numbers used to be written here as constants, with a
     comment saying they were "the same numbers scanout and the bridge
@@ -27,16 +27,16 @@ def container_timing(mode: str) -> dict:
     The vertical blanking shrinks by that line rather than the total
     growing, because the total is what a source locks to.
     """
-    from np2hw.video_out import mode_timing
+    from bayerlink.rasters import raster
 
-    t = mode_timing(mode)
-    vact = t["v_active"] + 1                       # + the header row
+    t = raster(mode)
+    vact = t.v_active + 1                          # + the header row
     return {
-        "pclk_10khz": int(round(t["pixel_mhz"] * 100)),
-        "hact": t["h_active"], "hblank": t["h_total"] - t["h_active"],
-        "vact": vact, "vblank": t["v_total"] - vact,
-        "hso": t["hs_beg"] - t["h_active"], "hsw": t["hs_end"] - t["hs_beg"],
-        "vso": t["vs_beg"] - vact, "vsw": t["vs_end"] - t["vs_beg"],
+        "pclk_10khz": round(t.pixel_khz / 10),
+        "hact": t.h_active, "hblank": t.h_total - t.h_active,
+        "vact": vact, "vblank": t.v_total - vact,
+        "hso": t.hs_beg - t.h_active, "hsw": t.hs_end - t.hs_beg,
+        "vso": t.vs_beg - vact, "vsw": t.vs_end - t.vs_beg,
     }
 
 

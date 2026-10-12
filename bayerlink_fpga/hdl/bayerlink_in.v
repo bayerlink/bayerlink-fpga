@@ -366,6 +366,9 @@ module bayerlink_in #(
     reg [23:0] p_b;
     reg [28:0] bfifo [0:BWORDS-1];   // {fe, le, ff, vb, b0, b1, b2}
     reg [BPTRW-1:0] bwr, brd;
+    // brd + 1, kept in a register: the next read address is then a
+    // mux on `pop`, not an adder behind it (pop is decided late).
+    reg [BPTRW-1:0] brd_inc;
     reg [BCNTW-1:0] bcount;
     wire bspace = (bcount != BFULL);
     wire bwr_en = p_valid && bspace;
@@ -412,7 +415,14 @@ module bayerlink_in #(
     // frame -- flush it, and the barrier opens.
     wire stub_flush = sk_valid && sk_ff && (wcnt != 4'd0)
                       && ({1'b0, wcnt} < {1'b0, need_r});
-    wire [BPTRW-1:0] brd_n = pop ? brd + 1'b1 : brd;
+    wire [BPTRW-1:0] brd_n = pop ? brd_inc : brd;
+    // bprimed's two questions, each answered from registers for every
+    // outcome so `pop` and the write only SELECT at the last level:
+    // is the FIFO non-empty next cycle (a write cannot wrap the count,
+    // it needs bspace), and does the write land on the next read?
+    wire bnz_next  = (bwr_en && !pop) ? 1'b1
+                   : (!bwr_en && pop) ? (bcount != BC1) : (bcount != BC0);
+    wire bsame_next = pop ? (bwr == brd_inc) : (bwr == brd);
 
     function [2:0] eng_be; input [2:0] c;
         case (c)
@@ -528,6 +538,11 @@ module bayerlink_in #(
     reg        q_valid;
     reg [2:0]  q_se;
     reg [SPTRW-1:0] q_swr;
+    // Each bank's write address, worked out at stage A: bank b takes
+    // the batch's slot (b - swr) mod 4, at (swr + that) >> 2. Stage B
+    // then drives the RAM addresses from registers alone; they fan out
+    // to every RAM of a bank, so synthesis may replicate them.
+    (* max_fanout = 32 *) reg [SPTRW-1:0] q_badr0, q_badr1, q_badr2, q_badr3;
     reg        q_sof, q_eol, q_last;
     reg [BITS-1:0] q_smp0, q_smp1, q_smp2, q_smp3;
 
@@ -587,10 +602,14 @@ module bayerlink_in #(
                        : (emit ? clamp8(act_code, rem_next, be) : be_eff);
     // Per-slot addresses at POINTER width: a batch that straddles
     // the wrap must wrap with it, not run off the end of the banks.
-    wire [SPTRW-1:0] q_adr0 = q_swr + 0;
-    wire [SPTRW-1:0] q_adr1 = q_swr + 1;
-    wire [SPTRW-1:0] q_adr2 = q_swr + 2;
-    wire [SPTRW-1:0] q_adr3 = q_swr + 3;
+    function [SPTRW-1:0] badr;
+        input [SPTRW-1:0] w; input [1:0] bank;
+        reg [1:0] slot;
+        begin
+            slot = bank - w[1:0];                    // mod 4
+            badr = (w + {{(SPTRW-2){1'b0}}, slot}) >> 2;
+        end
+    endfunction
     always @(posedge clk) begin
         // No flush on a discontinuity, deliberately: there is
         // nothing to flush. The rate rule drains a line within a
@@ -602,7 +621,7 @@ module bayerlink_in #(
         // this clock, so nothing here could run anyway; that
         // recovery belongs to whatever holds rst.
         if (rst) begin
-            bwr <= 0; brd <= 0; bcount <= 0;
+            bwr <= 0; brd <= 0; brd_inc <= 1; bcount <= 0;
             bprimed <= 0; bdout <= 0;
             p_valid <= 0; p_ff <= 0; p_le <= 0; p_fe <= 0;
             p_vb <= 0; p_b <= 0;
@@ -611,6 +630,7 @@ module bayerlink_in #(
             wcnt <= 0; swr <= 0; srd <= 0;
             scount_res <= 0; scount_avail <= 0; q_valid <= 0;
             q_se <= 0; q_swr <= 0; q_sof <= 0; q_eol <= 0;
+            q_badr0 <= 0; q_badr1 <= 0; q_badr2 <= 0; q_badr3 <= 0;
             q_last <= 0; q_smp0 <= 0; q_smp1 <= 0; q_smp2 <= 0;
             q_smp3 <= 0;
             act_valid <= 0; act_code <= 0; act_width <= 0;
@@ -631,9 +651,7 @@ module bayerlink_in #(
             else if (p_valid && !bspace) overflow <= 1'b1;  // sticky
             // registered FIFO head: next cycle bdout matches brd
             bdout <= bfifo[brd_n];
-            bprimed <= ((bcount + (bwr_en ? BC1 : BC0)
-                         - (pop ? BC1 : BC0)) != 0)
-                       && !(bwr_en && (bwr == brd_n));
+            bprimed <= bnz_next && !(bwr_en && bsame_next);
 
             // drain side: shift, then insert the popped word's bytes
             for (k = 0; k < WINDOW; k = k + 1) win[k] <= wnext[k];
@@ -646,6 +664,7 @@ module bayerlink_in #(
                 sk_vb <= bhead[25:24];
                 sk_b  <= bhead[23:0];
                 brd <= brd_n;
+                brd_inc <= brd_inc + 1'b1;
             end else if (sk_take)
                 sk_valid <= 1'b0;
             if (sk_take) begin
@@ -674,6 +693,8 @@ module bayerlink_in #(
             q_valid <= emit;
             if (emit) begin
                 q_se <= se_eff; q_swr <= swr;
+                q_badr0 <= badr(swr, 2'd0); q_badr1 <= badr(swr, 2'd1);
+                q_badr2 <= badr(swr, 2'd2); q_badr3 <= badr(swr, 2'd3);
                 q_sof <= batch_sof; q_eol <= batch_eol;
                 q_last <= batch_last;
                 q_smp0 <= align(smp0); q_smp1 <= align(smp1);
@@ -709,73 +730,73 @@ module bayerlink_in #(
             if (q_valid) begin
                 case (q_swr[1:0])
                     2'd0: begin
-                        if (q_se > 3'd0) sbank0[q_adr0 >> 2] <= {
+                        if (q_se > 3'd0) sbank0[q_badr0] <= {
                             (q_se == 3'd1) ? q_last : 1'b0,
                             (q_se == 3'd1) ? q_eol  : 1'b0,
                             q_sof, q_smp0};
-                        if (q_se > 3'd1) sbank1[q_adr1 >> 2] <= {
+                        if (q_se > 3'd1) sbank1[q_badr1] <= {
                             (q_se == 3'd2) ? q_last : 1'b0,
                             (q_se == 3'd2) ? q_eol  : 1'b0,
                             1'b0, q_smp1};
-                        if (q_se > 3'd2) sbank2[q_adr2 >> 2] <= {
+                        if (q_se > 3'd2) sbank2[q_badr2] <= {
                             (q_se == 3'd3) ? q_last : 1'b0,
                             (q_se == 3'd3) ? q_eol  : 1'b0,
                             1'b0, q_smp2};
-                        if (q_se > 3'd3) sbank3[q_adr3 >> 2] <= {
+                        if (q_se > 3'd3) sbank3[q_badr3] <= {
                             (q_se == 3'd4) ? q_last : 1'b0,
                             (q_se == 3'd4) ? q_eol  : 1'b0,
                             1'b0, q_smp3};
                     end
                     2'd1: begin
-                        if (q_se > 3'd0) sbank1[q_adr0 >> 2] <= {
+                        if (q_se > 3'd0) sbank1[q_badr1] <= {
                             (q_se == 3'd1) ? q_last : 1'b0,
                             (q_se == 3'd1) ? q_eol  : 1'b0,
                             q_sof, q_smp0};
-                        if (q_se > 3'd1) sbank2[q_adr1 >> 2] <= {
+                        if (q_se > 3'd1) sbank2[q_badr2] <= {
                             (q_se == 3'd2) ? q_last : 1'b0,
                             (q_se == 3'd2) ? q_eol  : 1'b0,
                             1'b0, q_smp1};
-                        if (q_se > 3'd2) sbank3[q_adr2 >> 2] <= {
+                        if (q_se > 3'd2) sbank3[q_badr3] <= {
                             (q_se == 3'd3) ? q_last : 1'b0,
                             (q_se == 3'd3) ? q_eol  : 1'b0,
                             1'b0, q_smp2};
-                        if (q_se > 3'd3) sbank0[q_adr3 >> 2] <= {
+                        if (q_se > 3'd3) sbank0[q_badr0] <= {
                             (q_se == 3'd4) ? q_last : 1'b0,
                             (q_se == 3'd4) ? q_eol  : 1'b0,
                             1'b0, q_smp3};
                     end
                     2'd2: begin
-                        if (q_se > 3'd0) sbank2[q_adr0 >> 2] <= {
+                        if (q_se > 3'd0) sbank2[q_badr2] <= {
                             (q_se == 3'd1) ? q_last : 1'b0,
                             (q_se == 3'd1) ? q_eol  : 1'b0,
                             q_sof, q_smp0};
-                        if (q_se > 3'd1) sbank3[q_adr1 >> 2] <= {
+                        if (q_se > 3'd1) sbank3[q_badr3] <= {
                             (q_se == 3'd2) ? q_last : 1'b0,
                             (q_se == 3'd2) ? q_eol  : 1'b0,
                             1'b0, q_smp1};
-                        if (q_se > 3'd2) sbank0[q_adr2 >> 2] <= {
+                        if (q_se > 3'd2) sbank0[q_badr0] <= {
                             (q_se == 3'd3) ? q_last : 1'b0,
                             (q_se == 3'd3) ? q_eol  : 1'b0,
                             1'b0, q_smp2};
-                        if (q_se > 3'd3) sbank1[q_adr3 >> 2] <= {
+                        if (q_se > 3'd3) sbank1[q_badr1] <= {
                             (q_se == 3'd4) ? q_last : 1'b0,
                             (q_se == 3'd4) ? q_eol  : 1'b0,
                             1'b0, q_smp3};
                     end
                     2'd3: begin
-                        if (q_se > 3'd0) sbank3[q_adr0 >> 2] <= {
+                        if (q_se > 3'd0) sbank3[q_badr3] <= {
                             (q_se == 3'd1) ? q_last : 1'b0,
                             (q_se == 3'd1) ? q_eol  : 1'b0,
                             q_sof, q_smp0};
-                        if (q_se > 3'd1) sbank0[q_adr1 >> 2] <= {
+                        if (q_se > 3'd1) sbank0[q_badr0] <= {
                             (q_se == 3'd2) ? q_last : 1'b0,
                             (q_se == 3'd2) ? q_eol  : 1'b0,
                             1'b0, q_smp1};
-                        if (q_se > 3'd2) sbank1[q_adr2 >> 2] <= {
+                        if (q_se > 3'd2) sbank1[q_badr1] <= {
                             (q_se == 3'd3) ? q_last : 1'b0,
                             (q_se == 3'd3) ? q_eol  : 1'b0,
                             1'b0, q_smp2};
-                        if (q_se > 3'd3) sbank2[q_adr3 >> 2] <= {
+                        if (q_se > 3'd3) sbank2[q_badr2] <= {
                             (q_se == 3'd4) ? q_last : 1'b0,
                             (q_se == 3'd4) ? q_eol  : 1'b0,
                             1'b0, q_smp3};

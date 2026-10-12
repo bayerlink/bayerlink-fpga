@@ -63,6 +63,10 @@ beside the bitstream, and refuses a layout whose checksum, built into the
 fabric, does not read back. `vid_probe`, whose word no design read, is
 retired.
 
+**The EDID reads bayerlink's rasters.** The advertised timing is the link
+mode's raster from `bayerlink.rasters`, the table the source reads too,
+rather than np2hw's; the bytes are unchanged.
+
 ## 0.2.1
 
 Built with `np2hw==0.6.1`, `bayerlink==0.5.0`, `revela==0.2.0`.
