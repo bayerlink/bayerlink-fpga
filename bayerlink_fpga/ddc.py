@@ -80,8 +80,12 @@ def build_edid(link_mode: str) -> bytes:
         0x1E,                                # separate sync, +h +v
     ])
     e[72:90] = bytes([0, 0, 0, 0xFC, 0]) + b"BAYERLINK RX\n"
-    e[90:108] = (bytes([0, 0, 0, 0xFD, 0, 29, 31, 30, 40, 8, 0, 0x0A])
-                 + b"\x20" * 6)              # 29-31 Hz, 30-40 kHz
+    # the range limits: the container's own rates, a step either side
+    hz = round(t["pclk_10khz"] * 1e4 / ((HACT + HBLANK) * (VACT + VBLANK)))
+    khz = round(t["pclk_10khz"] * 10 / (HACT + HBLANK))
+    mhz10 = -(-t["pclk_10khz"] // 1000)          # max clock, in 10 MHz
+    e[90:108] = (bytes([0, 0, 0, 0xFD, 0, hz - 1, hz + 1, khz - 5, khz + 5,
+                        mhz10, 0, 0x0A]) + b"\x20" * 6)
     e[108:126] = bytes([0, 0, 0, 0x10, 0]) + bytes(13)
     e[126] = 0                               # no extension blocks
     e[127] = (-sum(e[:127])) % 256

@@ -12,6 +12,11 @@ revela.
 
 ## Unreleased
 
+**The EDID's range limits are its link mode's.** The monitor range
+descriptor stated 29-31 Hz and 30-40 kHz whatever the build advertised;
+it is derived from the container's own timing now, a step either side,
+with its pixel clock as the ceiling.
+
 **The board design moved to revela; this repository became the receiver's
 package.** It keeps what any FPGA receiving bayerlink needs, and nothing
 that belongs to one design:
