@@ -9,6 +9,10 @@
         },
         "link_khz": {
           "description": "The link's pixel clock, in kHz: the rate the source sends, which the implementation's clocking is set for."
+        },
+        "status": {
+          "default": 0,
+          "description": "1: the implementation's own account of the link, on the ports below marked by it -- for an implementation that keeps one."
         }
       },
       "inputs": [
@@ -22,7 +26,19 @@
         {"name": "de"},
         {"name": "hsync"},
         {"name": "vsync"},
-        {"name": "data", "width": 24, "description": "Lane 0 is data[23:16], lane 1 [15:8], lane 2 [7:0]."}
+        {"name": "data", "width": 24, "description": "Lane 0 is data[23:16], lane 1 [15:8], lane 2 [7:0]."},
+        {"name": "bonded", "when": "status", "description": "tmds_rx: the three lanes found in step."},
+        {"name": "clock_locked", "when": "status", "description": "tmds_rx: its clock manager locked to the link's clock."},
+        {"name": "aligned", "width": 3, "when": "status", "description": "tmds_rx: each lane aligned, lane 0 lowest."},
+        {"name": "eye", "width": 15, "when": "status", "description": "tmds_rx: each lane's eye, its taps that misread nothing, 5 bits a lane, lane 0 lowest."},
+        {"name": "slip", "width": 12, "when": "status", "description": "tmds_rx: each lane's bit slip, 4 bits a lane, lane 0 lowest."},
+        {"name": "survey_count", "width": 8, "when": "status", "description": "tmds_rx's survey, an entry at a time, each entry's fields together (hdl/tmds_rx.v): the misread tokens at this lane, slip and tap, 255 for no blank seen."},
+        {"name": "survey_tap", "width": 5, "when": "status", "description": "The survey entry's delay tap."},
+        {"name": "survey_slip", "width": 4, "when": "status", "description": "The survey entry's bit slip."},
+        {"name": "survey_lane", "width": 2, "when": "status", "description": "The survey entry's lane."},
+        {"name": "survey_lane_tap", "width": 5, "when": "status", "description": "The tap that lane samples at."},
+        {"name": "survey_lane_slip", "width": 4, "when": "status", "description": "The bit slip that lane samples at."},
+        {"name": "survey_lane_aligned", "when": "status", "description": "Whether that lane is aligned."}
       ],
       "implementations": {
         "dvi2rgb": {
@@ -39,6 +55,17 @@
           },
           "tie": {"pRst": 0},
           "facts": {"lane_map": [1, 2, 0], "vsync_active_high": 1, "refclk_mhz": 200, "min_link_khz": 25000}
+        },
+        "tmds_rx": {
+          "description": "bayerlink-fpga's own TMDS receiver on a 7-series part (hdl/tmds_rx.v): an MMCM at five times the link clock into BUFIO and BUFR, an IDELAYE2 and a pair of ISERDESE2 a lane, and an alignment made for links that blank every line -- each delay tap of every bit slip given tens of lines to show blanks and count misread tokens, not 50 ms, so a mode change costs a fraction of a second rather than seconds, and each lane samples between the walls of its eye at the least delay -- then the lanes bonded by where their blanking ends, and decoded. Its lanes are the TMDS channels in order. RANGE keeps the MMCM's VCO in specification, as dvi2rgb's kClkRange does.",
+          "vivado": {"module": "tmds_rx"},
+          "sources": ["bayerlink_fpga:hdl/tmds_rx.v", "bayerlink_fpga:hdl/tmds_rx_lane.v", "bayerlink_fpga:hdl/tmds_align.v", "bayerlink_fpga:hdl/tmds_bond.v"],
+          "constraints": [{"file": "bayerlink_fpga:hdl/tmds_rx.xdc", "scoped_to": "tmds_rx"}],
+          "config": {
+            "LINK_KHZ": "link_khz",
+            "RANGE": "1 if link_khz >= 120000 else 2 if link_khz >= 60000 else 3 if link_khz >= 40000 else 4 if link_khz >= 30000 else 5"
+          },
+          "facts": {"lane_map": [0, 1, 2], "vsync_active_high": 1, "refclk_mhz": 200, "min_link_khz": 25000}
         }
       }
     }

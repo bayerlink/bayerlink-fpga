@@ -12,6 +12,28 @@ revela.
 
 ## Unreleased
 
+**An HDMI receiver of our own, `tmds_rx`** (`hdl/tmds_rx.v`), as a
+second implementation of `frontends/hdmi_rx`: an MMCM at five times the
+link into BUFIO and BUFR, an IDELAYE2 and an ISERDESE2 pair a lane, and
+an alignment made for links that blank every line. Every delay tap of
+every bit slip is watched for tens of lines, for whether it sees blanks
+at all and how many control tokens it misreads; a lane samples at the
+middle of the taps that see blanks -- the walls of its eye, not its
+error-free taps, which sit off the middle -- at the least delay, so every
+lock lands on the same taps, and a mode change costs ~150 ms where
+dvi2rgb's 50 ms per tap cost seconds. The lanes are bonded where their
+blanking ends, held bonded through a stray misread token, and a line's
+data is what two of the three lanes say; `locked` is the clock locked and
+the lanes delivering, falling at once when the cable is pulled. What it
+saw is the block's optional account of the link, as named ports: the
+bond, each lane's alignment, eye and bit slip, and a survey of every
+lane's misread tokens at every tap of every slip, an entry at a time.
+Proven in simulation against a DVI source skewed by bits and whole
+words, with stray bit errors in its blanking, through a cable pull, at
+148.5, 74.25 and 27 MHz links (`tests/test_tmds_rx_sim.py`), and on the
+PYNQ-Z2 at 148.5 MHz: twenty locks bit-exact, and a 1080p30 camera's
+stream for minutes without a dropped lock.
+
 **The EDID's range limits are its link mode's.** The monitor range
 descriptor stated 29-31 Hz and 30-40 kHz whatever the build advertised;
 it is derived from the container's own timing now, a step either side,
