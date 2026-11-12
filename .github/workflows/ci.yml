@@ -51,6 +51,7 @@ jobs:
               "MIT", "MIT-0", "BSD-2-Clause", "BSD-3-Clause", "0BSD",
               "Apache-2.0", "PSF-2.0", "ISC", "Zlib", "CC0-1.0", "HPND",
               "Python-2.0", "Unlicense", "MPL-2.0",
+              "Apache-2.0 WITH SHL-2.1",       # bayerlink-fpga itself
           }
           # MPL-2.0 is permitted only where it appears: a build-time transitive
           # of the build backend, never imported, never redistributed in the
