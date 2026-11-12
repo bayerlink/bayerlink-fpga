@@ -75,6 +75,9 @@ input (a receiver chip, another FPGA family) is a new implementation of
 
 ## Use it from a board design
 
+`pip install bayerlink-fpga` puts the receiver's blocks on the import
+path, where a design names them.
+
 A board's jack fills a node with `hdmi_rx`; a design names the receiver
 and its DDC slave as leaves and sets them. The receiver's lane order and
 vsync polarity are assigned from the front end's facts, its capacity and

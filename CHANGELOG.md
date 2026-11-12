@@ -10,7 +10,7 @@ claim was reproducibility. From the next release it publishes
 `bayerlink-fpga`, the receiver's package, and the board design lives in
 revela.
 
-## Unreleased
+## 0.3.0
 
 **An HDMI receiver of our own, `tmds_rx`** (`hdl/tmds_rx.v`), as a
 second implementation of `frontends/hdmi_rx`: an MMCM at five times the

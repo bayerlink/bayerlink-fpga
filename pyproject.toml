@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bayerlink-fpga"
-version = "0.3.0.dev0"
+version = "0.3.0"
 description = "The bayerlink receiver on FPGAs: the receiver and its front ends"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,8 +15,10 @@ keywords = ["bayerlink", "fpga", "hdmi", "raw", "bayer", "verilog"]
 dependencies = [
     # The receiver's output slice and its port declarations are np2hw's,
     # and the protocol tables it reads are bayerlink's; both are depended
-    # on, never vendored.
-    "np2hw>=0.6.1",
+    # on, never vendored. 0.7.0 is np2hw's floor, not a preference: the
+    # blocks import np2hw.design and np2hw.ports, which the PUBLISHED 0.6.1
+    # does not have. Checked against the real wheels.
+    "np2hw>=0.7.0",
     "bayerlink>=0.5.0",
 ]
 
